@@ -1,7 +1,7 @@
 package crypto
 
 import (
-	"crypto-stream-auth/internal/domain" // Убедитесь, что это ваш правильный путь к модулю
+	"crypto-stream-auth/internal/domain"
 	"crypto/ed25519"
 	"fmt"
 )

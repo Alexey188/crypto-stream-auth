@@ -2,6 +2,7 @@ package crypto
 
 import (
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
@@ -14,11 +15,12 @@ import (
 )
 
 type CertificateGenerator struct {
-	PrivateKey  *ecdsa.PrivateKey
+	PrivateKey  ed25519.PrivateKey
 	Certificate *x509.Certificate
 }
 
 // конструктор. инициализируем Приватный ключ и корневой сертификат (если есть читаем из файла)
+// TODO : здесь стоит разделить логику
 func NewCertificateGenerator(certPath, keyPath, orgName string) (*CertificateGenerator, error) {
 	cg := &CertificateGenerator{}
 
@@ -45,15 +47,21 @@ func NewCertificateGenerator(certPath, keyPath, orgName string) (*CertificateGen
 		if keyBlock == nil {
 			return nil, fmt.Errorf("не удалось декодировать PEM ключа")
 		}
-		cg.PrivateKey, err = x509.ParseECPrivateKey(keyBlock.Bytes)
+		parsedKey, err := x509.ParsePKCS8PrivateKey(keyBlock.Bytes)
 		if err != nil {
 			return nil, err
 		}
 
+		privateKey, ok := parsedKey.(ed25519.PrivateKey)
+		if !ok {
+			return nil, fmt.Errorf("private key is not Ed25519")
+		}
+
+		cg.PrivateKey = privateKey
 		return cg, nil
 	}
 	// не нашли файл, создаём ключ и сертификат
-	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	publickey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, err
 	}
@@ -69,7 +77,7 @@ func NewCertificateGenerator(certPath, keyPath, orgName string) (*CertificateGen
 		IsCA:                  true,
 	}
 
-	certBytes, err := x509.CreateCertificate(rand.Reader, template, template, &privKey.PublicKey, privKey)
+	certBytes, err := x509.CreateCertificate(rand.Reader, template, template, publickey, privateKey)
 	if err != nil {
 		return nil, err
 	}
@@ -78,7 +86,7 @@ func NewCertificateGenerator(certPath, keyPath, orgName string) (*CertificateGen
 	if err != nil {
 		return nil, err
 	}
-	cg.PrivateKey = privKey
+	cg.PrivateKey = privateKey
 
 	certFile, err := os.OpenFile(certPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
@@ -91,11 +99,11 @@ func NewCertificateGenerator(certPath, keyPath, orgName string) (*CertificateGen
 	if err != nil {
 		return nil, err
 	}
-	privBytes, err := x509.MarshalECPrivateKey(cg.PrivateKey)
+	privBytes, err := x509.MarshalPKCS8PrivateKey(cg.PrivateKey)
 	if err != nil {
 		return nil, err
 	}
-	pem.Encode(keyFile, &pem.Block{Type: "EC PRIVATE KEY", Bytes: privBytes})
+	pem.Encode(keyFile, &pem.Block{Type: "PRIVATE KEY", Bytes: privBytes})
 	keyFile.Close()
 
 	return cg, nil
