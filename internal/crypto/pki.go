@@ -1,30 +1,84 @@
 package crypto
 
 import (
-	"crypto/ecdsa"
-	"crypto/ed25519"
-	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"os"
 	"time"
 )
 
-type CertificateGenerator struct {
-	PrivateKey  ed25519.PrivateKey
+var (
+	ErrGenerateRootCA         = errors.New("generate Certificate")
+	ErrLoadRootCA             = errors.New("load Certificate")
+	ErrIssueCameraCertificate = errors.New("issue camera certificate")
+	ErrSaveRootCA             = errors.New("save root ca")
+)
+
+const (
+	rootCAKeyBits = 4096
+	cameraKeyBits = 3072
+)
+
+type RootCA struct {
+	PrivateKey  *rsa.PrivateKey
 	Certificate *x509.Certificate
 }
 
-// конструктор. инициализируем Приватный ключ и корневой сертификат (если есть читаем из файла)
-// TODO : здесь стоит разделить логику
-func NewCertificateGenerator(certPath, keyPath, orgName string) (*CertificateGenerator, error) {
-	cg := &CertificateGenerator{}
+// конструктор. инициализируем Приватный ключ и корневой сертификат.
+func GenerateRootCA(orgName string) (*RootCA, error) {
+	rootCA := &RootCA{}
 
-	// читаем из файла
+	privateKey, err := rsa.GenerateKey(rand.Reader, rootCAKeyBits)
+	if err != nil {
+		return nil, fmt.Errorf("%w: error generate private key: %w", ErrGenerateRootCA, err)
+	}
+
+	if err := validateRootCAPrivateKey(privateKey); err != nil {
+		return nil, fmt.Errorf("%w: invalid RootCA private key: %w", ErrGenerateRootCA, err)
+	}
+
+	publicKey := &privateKey.PublicKey
+
+	serialNumber, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return nil, fmt.Errorf("%w: error generate serial number: %w", ErrGenerateRootCA, err)
+	}
+	template := &x509.Certificate{
+		SerialNumber:          serialNumber,
+		Subject:               pkix.Name{Organization: []string{orgName}},
+		NotBefore:             time.Now(),
+		NotAfter:              time.Now().Add(10 * 365 * 24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		SignatureAlgorithm:    x509.SHA384WithRSAPSS,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+
+	certBytes, err := x509.CreateCertificate(rand.Reader, template, template, publicKey, privateKey)
+	if err != nil {
+		return nil, fmt.Errorf("%w: error create certificate: %w", ErrGenerateRootCA, err)
+
+	}
+
+	rootCA.Certificate, err = x509.ParseCertificate(certBytes)
+	if err != nil {
+		return nil, fmt.Errorf("%w: parse certificate: %w", ErrGenerateRootCA, err)
+	}
+	rootCA.PrivateKey = privateKey
+
+	return rootCA, nil
+}
+
+func LoadRootCA(certPath, keyPath string) (*RootCA, error) {
+
+	rootCA := &RootCA{}
+
 	if _, err := os.Stat(certPath); err == nil {
 		certData, err := os.ReadFile(certPath)
 		if err != nil {
@@ -32,9 +86,9 @@ func NewCertificateGenerator(certPath, keyPath, orgName string) (*CertificateGen
 		}
 		certBlock, _ := pem.Decode(certData)
 		if certBlock == nil {
-			return nil, fmt.Errorf("не удалось декодировать PEM сертификата")
+			return nil, fmt.Errorf("%w: error decode PEM certificate", ErrLoadRootCA)
 		}
-		cg.Certificate, err = x509.ParseCertificate(certBlock.Bytes)
+		rootCA.Certificate, err = x509.ParseCertificate(certBlock.Bytes)
 		if err != nil {
 			return nil, err
 		}
@@ -45,104 +99,163 @@ func NewCertificateGenerator(certPath, keyPath, orgName string) (*CertificateGen
 		}
 		keyBlock, _ := pem.Decode(keyData)
 		if keyBlock == nil {
-			return nil, fmt.Errorf("не удалось декодировать PEM ключа")
+			return nil, fmt.Errorf("%w: error decode PEM key", ErrLoadRootCA)
 		}
 		parsedKey, err := x509.ParsePKCS8PrivateKey(keyBlock.Bytes)
 		if err != nil {
 			return nil, err
 		}
 
-		privateKey, ok := parsedKey.(ed25519.PrivateKey)
+		privateKey, ok := parsedKey.(*rsa.PrivateKey)
 		if !ok {
-			return nil, fmt.Errorf("private key is not Ed25519")
+			return nil, fmt.Errorf("%w: private key is not RSA", ErrLoadRootCA)
+		}
+		if err := validateRootCAPrivateKey(privateKey); err != nil {
+			return nil, fmt.Errorf("%w: invalid RootCA private key: %w", ErrLoadRootCA, err)
 		}
 
-		cg.PrivateKey = privateKey
-		return cg, nil
+		rootCA.PrivateKey = privateKey
+		return rootCA, nil
+	} else {
+		return nil, fmt.Errorf("%w: %w", ErrLoadRootCA, err)
 	}
-	// не нашли файл, создаём ключ и сертификат
-	publickey, privateKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, err
+}
+func SaveRootCA(rootCA *RootCA, certPath, keyPath string) error {
+
+	if rootCA == nil {
+		return fmt.Errorf("%w: certificate generator is nil", ErrSaveRootCA)
 	}
 
-	serialNumber, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	template := &x509.Certificate{
-		SerialNumber:          serialNumber,
-		Subject:               pkix.Name{Organization: []string{orgName}},
-		NotBefore:             time.Now(),
-		NotAfter:              time.Now().Add(10 * 365 * 24 * time.Hour),
-		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
-		BasicConstraintsValid: true,
-		IsCA:                  true,
+	if rootCA.Certificate == nil {
+		return fmt.Errorf("%w: certificate is nil", ErrSaveRootCA)
 	}
 
-	certBytes, err := x509.CreateCertificate(rand.Reader, template, template, publickey, privateKey)
-	if err != nil {
-		return nil, err
+	if err := validateRootCAPrivateKey(rootCA.PrivateKey); err != nil {
+		return fmt.Errorf("%w: invalid RootCA private key: %w", ErrSaveRootCA, err)
 	}
-
-	cg.Certificate, err = x509.ParseCertificate(certBytes)
-	if err != nil {
-		return nil, err
-	}
-	cg.PrivateKey = privateKey
 
 	certFile, err := os.OpenFile(certPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	pem.Encode(certFile, &pem.Block{Type: "CERTIFICATE", Bytes: cg.Certificate.Raw})
-	certFile.Close()
+
+	if err := pem.Encode(certFile, &pem.Block{Type: "CERTIFICATE", Bytes: rootCA.Certificate.Raw}); err != nil {
+		_ = certFile.Close()
+		return fmt.Errorf("%w: failed to encode certificate: %w", ErrSaveRootCA, err)
+	}
+
+	if err := certFile.Close(); err != nil {
+		return fmt.Errorf("%w: failed to close certificate file: %w", ErrSaveRootCA, err)
+
+	}
 
 	keyFile, err := os.OpenFile(keyPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	privBytes, err := x509.MarshalPKCS8PrivateKey(cg.PrivateKey)
-	if err != nil {
-		return nil, err
-	}
-	pem.Encode(keyFile, &pem.Block{Type: "PRIVATE KEY", Bytes: privBytes})
-	keyFile.Close()
+	privBytes, err := x509.MarshalPKCS8PrivateKey(rootCA.PrivateKey)
 
-	return cg, nil
+	if err != nil {
+		_ = keyFile.Close()
+		return fmt.Errorf("%w: marshal private key: %w", ErrSaveRootCA, err)
+	}
+	if err := pem.Encode(keyFile, &pem.Block{Type: "PRIVATE KEY", Bytes: privBytes}); err != nil {
+		_ = keyFile.Close()
+		return fmt.Errorf("%w: failed to encode private key: %w", ErrSaveRootCA, err)
+
+	}
+
+	if err := keyFile.Close(); err != nil {
+		return fmt.Errorf("%w: failed to close key file: %w", ErrSaveRootCA, err)
+	}
+	return nil
 }
 
-// IssueCameraCertificate выпускает уникальный сертификат и аппаратный ключ для конкретной камеры.
-func (cg *CertificateGenerator) IssueCameraCertificate(cameraID string) (*x509.Certificate, *ecdsa.PrivateKey, error) {
-	// Генерируем уникальный аппаратный (долговременный) ключ для этой камеры
-	camPrivKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, nil, fmt.Errorf("ошибка генерации ключа камеры: %w", err)
+// логика выпуска сертификатов для камеры
+// cameraPublicKey - из tpm модуля
+func IssueCameraCertificate(rootCA *RootCA, cameraID string, cameraPublicKey *rsa.PublicKey) (*x509.Certificate, error) {
+	if rootCA == nil {
+		return nil, fmt.Errorf("%w: RootCa is nil", ErrIssueCameraCertificate)
 	}
 
-	serialNumber, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if rootCA.Certificate == nil {
+		return nil, fmt.Errorf("%w: RootCa certificate is nil", ErrIssueCameraCertificate)
+	}
 
-	// шаблон сертификата-паспорта для камеры
+	if cameraID == "" {
+		return nil, fmt.Errorf("%w: CameraID invalid value", ErrIssueCameraCertificate)
+
+	}
+	if err := validateRootCAPrivateKey(rootCA.PrivateKey); err != nil {
+		return nil, fmt.Errorf("%w: invalid RootCA private key: %w", ErrIssueCameraCertificate, err)
+	}
+
+	if err := validateCameraPublicKey(cameraPublicKey); err != nil {
+		return nil, fmt.Errorf("%w: invalid Camera public key: %w", ErrIssueCameraCertificate, err)
+	}
+
+	serialNumber, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return nil, fmt.Errorf("%w: generate serial number: %w", ErrIssueCameraCertificate, err)
+	}
+
+	now := time.Now()
+
 	template := &x509.Certificate{
 		SerialNumber: serialNumber,
 		Subject: pkix.Name{
-			Organization: cg.Certificate.Subject.Organization,
-			CommonName:   cameraID,
+			CommonName: cameraID,
 		},
-		NotBefore:             time.Now(),
-		NotAfter:              time.Now().Add(5 * 365 * 24 * time.Hour),
+		NotBefore: now.Add(-time.Minute),
+		NotAfter:  now.Add(365 * 24 * time.Hour),
+
 		KeyUsage:              x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		SignatureAlgorithm:    x509.SHA384WithRSAPSS,
 		BasicConstraintsValid: true,
 		IsCA:                  false,
 	}
 
-	certBytes, err := x509.CreateCertificate(rand.Reader, template, cg.Certificate, &camPrivKey.PublicKey, cg.PrivateKey)
+	certBytes, err := x509.CreateCertificate(
+		rand.Reader,
+		template,
+		rootCA.Certificate,
+		cameraPublicKey,
+		rootCA.PrivateKey,
+	)
 	if err != nil {
-		return nil, nil, fmt.Errorf("ошибка подписи сертификата камеры: %w", err)
+		return nil, fmt.Errorf("%w: create certificate: %w", ErrIssueCameraCertificate, err)
 	}
 
-	camCert, err := x509.ParseCertificate(certBytes)
+	cert, err := x509.ParseCertificate(certBytes)
 	if err != nil {
-		return nil, nil, err
+		return nil, fmt.Errorf("%w: parse certificate: %w", ErrIssueCameraCertificate, err)
 	}
 
-	return camCert, camPrivKey, nil
+	return cert, nil
+}
+
+func validateRootCAPrivateKey(key *rsa.PrivateKey) error {
+	if key == nil {
+		return fmt.Errorf("private key is nil")
+	}
+	if key.N == nil {
+		return fmt.Errorf("private key modulus is nil")
+	}
+	if key.N.BitLen() != rootCAKeyBits {
+		return fmt.Errorf("private key size is %d bits, want %d", key.N.BitLen(), rootCAKeyBits)
+	}
+	return nil
+}
+
+func validateCameraPublicKey(key *rsa.PublicKey) error {
+	if key == nil {
+		return fmt.Errorf("public key is nil")
+	}
+	if key.N == nil {
+		return fmt.Errorf("public key modulus is nil")
+	}
+	if key.N.BitLen() != cameraKeyBits {
+		return fmt.Errorf("public key size is %d bits, want %d", key.N.BitLen(), cameraKeyBits)
+	}
+	return nil
 }
