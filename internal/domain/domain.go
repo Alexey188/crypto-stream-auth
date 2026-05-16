@@ -5,8 +5,8 @@ import (
 )
 
 type VideoFrame struct {
-	SessionID uint32
-	Sequence  uint32 // Это счетчик кадров
+	SessionID [16]byte
+	Sequence  uint64 // Это счетчик кадров
 	Timestamp int64
 	Payload   []byte
 	Signature [64]byte
@@ -14,15 +14,12 @@ type VideoFrame struct {
 
 func (f *VideoFrame) BytesToSign() []byte {
 
-	capacity := 16 + len(f.Payload)
+	buf := make([]byte, 0, 16+8+8+len(f.Payload))
 
-	buf := make([]byte, capacity)
-
-	binary.BigEndian.PutUint32(buf[0:4], f.SessionID)
-	binary.BigEndian.PutUint32(buf[4:8], f.Sequence)
-	binary.BigEndian.PutUint64(buf[8:16], uint64(f.Timestamp))
-
-	copy(buf[16:], f.Payload)
+	buf = append(buf, f.SessionID[:]...)
+	buf = binary.BigEndian.AppendUint64(buf, f.Sequence)
+	buf = binary.BigEndian.AppendUint64(buf, uint64(f.Timestamp))
+	buf = append(buf, f.Payload...)
 
 	return buf
 }
