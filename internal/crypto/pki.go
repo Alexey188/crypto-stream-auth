@@ -1,6 +1,7 @@
 package crypto
 
 import (
+	"crypto-stream-auth/internal/fileutil"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -23,7 +24,8 @@ var (
 
 const (
 	rootCAKeyBits = 4096
-	cameraKeyBits = 3072
+	//cameraKeyBits = 3072
+	cameraKeyBits = 2048
 )
 
 type RootCA struct {
@@ -135,40 +137,29 @@ func SaveRootCA(rootCA *RootCA, certPath, keyPath string) error {
 		return fmt.Errorf("%w: invalid RootCA private key: %w", ErrSaveRootCA, err)
 	}
 
-	certFile, err := os.OpenFile(certPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
-	if err != nil {
-		return err
-	}
-
-	if err := pem.Encode(certFile, &pem.Block{Type: "CERTIFICATE", Bytes: rootCA.Certificate.Raw}); err != nil {
-		_ = certFile.Close()
-		return fmt.Errorf("%w: failed to encode certificate: %w", ErrSaveRootCA, err)
-	}
-
-	if err := certFile.Close(); err != nil {
-		return fmt.Errorf("%w: failed to close certificate file: %w", ErrSaveRootCA, err)
-
-	}
-
-	keyFile, err := os.OpenFile(keyPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-	if err != nil {
-		return err
-	}
 	privBytes, err := x509.MarshalPKCS8PrivateKey(rootCA.PrivateKey)
-
 	if err != nil {
-		_ = keyFile.Close()
 		return fmt.Errorf("%w: marshal private key: %w", ErrSaveRootCA, err)
 	}
-	if err := pem.Encode(keyFile, &pem.Block{Type: "PRIVATE KEY", Bytes: privBytes}); err != nil {
-		_ = keyFile.Close()
-		return fmt.Errorf("%w: failed to encode private key: %w", ErrSaveRootCA, err)
 
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: rootCA.Certificate.Raw})
+	if certPEM == nil {
+		return fmt.Errorf("%w: encode certificate", ErrSaveRootCA)
 	}
 
-	if err := keyFile.Close(); err != nil {
-		return fmt.Errorf("%w: failed to close key file: %w", ErrSaveRootCA, err)
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privBytes})
+	if keyPEM == nil {
+		return fmt.Errorf("%w: encode private key", ErrSaveRootCA)
 	}
+
+	if err := fileutil.WriteFileOnce(certPath, certPEM, 0644); err != nil {
+		return fmt.Errorf("%w: write root ca certificate: %w", ErrSaveRootCA, err)
+	}
+
+	if err := fileutil.WriteFileOnce(keyPath, keyPEM, 0600); err != nil {
+		return fmt.Errorf("%w: write root ca private key: %w", ErrSaveRootCA, err)
+	}
+
 	return nil
 }
 
@@ -303,7 +294,7 @@ func SaveCertificate(cert *x509.Certificate, path string) error {
 		return fmt.Errorf("%w: certificate is nil", ErrSaveCertificate)
 	}
 
-	if err := os.WriteFile(
+	if err := fileutil.WriteFileOnce(
 		path,
 		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw}),
 		0644,

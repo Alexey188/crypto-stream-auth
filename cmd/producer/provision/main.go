@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto-stream-auth/internal/fileutil"
+	"crypto-stream-auth/internal/tpm"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
@@ -9,8 +11,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-
-	"crypto-stream-auth/internal/tpm"
 )
 
 // TODO: если KeyHandle у tpm уже занят, нужно выбрать свободный идентификатор
@@ -24,19 +24,26 @@ var (
 )
 
 func main() {
-	signer, err := tpm.ProvisionSigner(cameraKeyHandle, nil, nil)
+	signer, err := tpm.OpenSigner(cameraKeyHandle, nil)
 	if err != nil {
-		log.Fatalf("provision tpm camera key: %v: %v", ErrGeneratePublicKey, err)
+		if !tpm.IsPersistentHandleNotFound(err) {
+			log.Fatalf("open existing tpm camera key: %v", err)
+		}
+
+		signer, err = tpm.ProvisionSigner(cameraKeyHandle, nil, nil)
+		if err != nil {
+			log.Fatalf("provision tpm camera key: %v", err)
+		}
 	}
 	defer signer.Close()
 
 	publicKey, err := signer.PublicKey()
 	if err != nil {
-		log.Fatalf("read tpm camera public key: %v: %v ", ErrGeneratePublicKey, err)
+		log.Fatalf("%v: read tpm camera public key: %v ", ErrGeneratePublicKey, err)
 	}
 
 	if err := saveCameraPublicKey(publicKey, cameraPublicKeyPem); err != nil {
-		log.Fatalf("save camera public key: %v :%v", ErrGeneratePublicKey, err)
+		log.Fatalf("%v: save camera public key: %v", ErrGeneratePublicKey, err)
 	}
 
 	log.Printf("camera public key exported successfully: %s", cameraPublicKeyPem)
@@ -57,7 +64,7 @@ func saveCameraPublicKey(publicKey *rsa.PublicKey, path string) error {
 
 	}
 
-	return os.WriteFile(
+	return fileutil.WriteFileOnce(
 		path,
 		pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: data}),
 		0644,

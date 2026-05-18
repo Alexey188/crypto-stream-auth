@@ -43,5 +43,14 @@ func VerifyCameraCertificate(cameraCertificate *x509.Certificate, rootCA *x509.C
 		return nil, fmt.Errorf("%w: missing digital signature key usage", ErrInvalidCertificate)
 	}
 
+	if cameraCertificate.SignatureAlgorithm != x509.SHA384WithRSAPSS {
+		return nil, fmt.Errorf(
+			"%w: camera certificate signature algorithm is %s, want %s",
+			ErrInvalidCertificate,
+			cameraCertificate.SignatureAlgorithm,
+			x509.SHA384WithRSAPSS,
+		)
+	}
+
 	return cameraPublicKey, nil
 }

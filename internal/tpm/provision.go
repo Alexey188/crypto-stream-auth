@@ -2,6 +2,7 @@ package tpm
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/google/go-tpm/tpm2"
 	"github.com/google/go-tpm/tpm2/transport"
@@ -14,6 +15,9 @@ const (
 	maxPersistentHandle uint32 = 0x81FFFFFF
 )
 
+func IsPersistentHandleNotFound(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "TPM_RC_HANDLE")
+}
 func ProvisionSigner(persistentHandle uint32, ownerAuth []byte, keyAuth []byte) (*Signer, error) {
 	if err := validatePersistentHandle(persistentHandle); err != nil {
 		return nil, err
@@ -114,8 +118,10 @@ func createSigningPrimary(tpmDevice transport.TPM, ownerAuth []byte, keyAuth []b
 							},
 						),
 					},
-					KeyBits:  3072,
-					Exponent: 65537,
+					// KeyBits:  3072,
+					// Exponent: 65537,
+					KeyBits:  2048,
+					Exponent: 0,
 				},
 			),
 		}),

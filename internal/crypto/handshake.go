@@ -123,7 +123,16 @@ func VerifyHandshake(payload *HandshakePayload, rootCA *x509.Certificate, consum
 
 	hash := sha256.Sum256(msg)
 
-	err = rsa.VerifyPSS(cameraPublicKey, stdcrypto.SHA256, hash[:], payload.Signature, nil)
+	err = rsa.VerifyPSS(
+		cameraPublicKey,
+		stdcrypto.SHA256,
+		hash[:],
+		payload.Signature,
+		&rsa.PSSOptions{
+			SaltLength: rsa.PSSSaltLengthEqualsHash,
+			Hash:       stdcrypto.SHA256,
+		},
+	)
 	if err != nil {
 		return fmt.Errorf("%w: invalid handshake signature: %w", ErrInvalidHandshake, err)
 	}

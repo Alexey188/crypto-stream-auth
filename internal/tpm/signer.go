@@ -93,9 +93,13 @@ func (s *Signer) PublicKey() (*rsa.PublicKey, error) {
 	if publicKey.N == nil {
 		return nil, fmt.Errorf("%w: rsa modulus is nil", ErrTPMSigner)
 	}
-	if publicKey.N.BitLen() != 3072 {
-		return nil, fmt.Errorf("%w: rsa key size is %d bits, want 3072", ErrTPMSigner, publicKey.N.BitLen())
+	if publicKey.N.BitLen() != 2048 {
+		return nil, fmt.Errorf("%w: rsa key size is %d bits, want 2048", ErrTPMSigner, publicKey.N.BitLen())
 	}
+
+	// if publicKey.N.BitLen() != 3072 {
+	// 	return nil, fmt.Errorf("%w: rsa key size is %d bits, want 3072", ErrTPMSigner, publicKey.N.BitLen())
+	// }
 
 	return publicKey, nil
 }

@@ -13,6 +13,7 @@ const (
 )
 
 func main() {
+
 	rootCA, err := authcrypto.GenerateRootCA(orgName)
 	if err != nil {
 		log.Fatal(err)
