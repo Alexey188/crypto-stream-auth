@@ -118,8 +118,6 @@ func createSigningPrimary(tpmDevice transport.TPM, ownerAuth []byte, keyAuth []b
 							},
 						),
 					},
-					// KeyBits:  3072,
-					// Exponent: 65537,
 					KeyBits:  2048,
 					Exponent: 0,
 				},

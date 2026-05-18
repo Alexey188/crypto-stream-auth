@@ -24,7 +24,6 @@ var (
 
 const (
 	rootCAKeyBits = 4096
-	//cameraKeyBits = 3072
 	cameraKeyBits = 2048
 )
 

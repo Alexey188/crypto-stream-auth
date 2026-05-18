@@ -15,8 +15,8 @@ go.work.sum
 .vscode/
 *.swp
 
-artifact/certs/*
+artifacts/certs/*
 !artifact/certs/.gitkeep
 
-artifact/keys/*
+artifacts/keys/*
 !artifact/keys/.gitkeep
