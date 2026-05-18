@@ -8,8 +8,8 @@ import (
 
 const (
 	orgName      = "TrustCam"
-	rootCertPath = "certs/root_ca.crt"
-	rootKeyPath  = "certs/root_ca.key"
+	rootCertPath = "artifacts/certs/root_ca.crt"
+	rootKeyPath  = "artifacts/keys/root_ca.key"
 )
 
 func main() {

@@ -16,7 +16,7 @@ import (
 // TODO: если KeyHandle у tpm уже занят, нужно выбрать свободный идентификатор
 const (
 	cameraKeyHandle    uint32 = 0x81000001
-	cameraPublicKeyPem        = "certs/camera_public.pem"
+	cameraPublicKeyPem        = "artifacts/keys/camera_public.pem"
 )
 
 var (

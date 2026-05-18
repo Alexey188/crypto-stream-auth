@@ -16,7 +16,7 @@ import (
 
 var (
 	ErrGenerateRootCA         = errors.New("generate root ca certificate")
-	ErrLoadRootCA             = errors.New("load root ca certificate")
+	ErrLoadFactory            = errors.New("load root ca certificate")
 	ErrIssueCameraCertificate = errors.New("issue camera certificate")
 	ErrSaveRootCA             = errors.New("save root ca")
 	ErrSaveCertificate        = errors.New("save certificate")
@@ -78,50 +78,67 @@ func GenerateRootCA(orgName string) (*RootCA, error) {
 	return rootCA, nil
 }
 
-func LoadRootCA(certPath, keyPath string) (*RootCA, error) {
-
-	rootCA := &RootCA{}
-
-	if _, err := os.Stat(certPath); err == nil {
-		certData, err := os.ReadFile(certPath)
-		if err != nil {
-			return nil, err
-		}
-		certBlock, _ := pem.Decode(certData)
-		if certBlock == nil {
-			return nil, fmt.Errorf("%w: error decode PEM certificate", ErrLoadRootCA)
-		}
-		rootCA.Certificate, err = x509.ParseCertificate(certBlock.Bytes)
-		if err != nil {
-			return nil, err
-		}
-
-		keyData, err := os.ReadFile(keyPath)
-		if err != nil {
-			return nil, err
-		}
-		keyBlock, _ := pem.Decode(keyData)
-		if keyBlock == nil {
-			return nil, fmt.Errorf("%w: error decode PEM key", ErrLoadRootCA)
-		}
-		parsedKey, err := x509.ParsePKCS8PrivateKey(keyBlock.Bytes)
-		if err != nil {
-			return nil, err
-		}
-
-		privateKey, ok := parsedKey.(*rsa.PrivateKey)
-		if !ok {
-			return nil, fmt.Errorf("%w: private key is not RSA", ErrLoadRootCA)
-		}
-		if err := validateRootCAPrivateKey(privateKey); err != nil {
-			return nil, fmt.Errorf("%w: invalid RootCA private key: %w", ErrLoadRootCA, err)
-		}
-
-		rootCA.PrivateKey = privateKey
-		return rootCA, nil
-	} else {
-		return nil, fmt.Errorf("%w: %w", ErrLoadRootCA, err)
+func LoadFactoryRootCA(certPath, keyPath string) (*RootCA, error) {
+	cert, err := LoadCertificate(certPath)
+	if err != nil {
+		return nil, fmt.Errorf("%w: load certificate: %w", ErrLoadFactory, err)
 	}
+
+	key, err := LoadRSAPrivateKey(keyPath)
+	if err != nil {
+		return nil, fmt.Errorf("%w: load private key: %w", ErrLoadFactory, err)
+	}
+
+	if err := validateRootCAPrivateKey(key); err != nil {
+		return nil, fmt.Errorf("%w: invalid private key: %w", ErrLoadFactory, err)
+	}
+
+	return &RootCA{
+		Certificate: cert,
+		PrivateKey:  key,
+	}, nil
+}
+func LoadCertificate(path string) (*x509.Certificate, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read certificate: %w", err)
+	}
+
+	block, _ := pem.Decode(data)
+	if block == nil {
+		return nil, fmt.Errorf("decode PEM certificate")
+	}
+
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse certificate: %w", err)
+	}
+
+	return cert, nil
+}
+
+func LoadRSAPrivateKey(path string) (*rsa.PrivateKey, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read rsa private key: %w", err)
+	}
+
+	block, _ := pem.Decode(data)
+	if block == nil {
+		return nil, fmt.Errorf("decode PEM private key")
+	}
+
+	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse private key: %w", err)
+	}
+
+	rsaKey, ok := key.(*rsa.PrivateKey)
+	if !ok {
+		return nil, fmt.Errorf("private key is not RSA")
+	}
+
+	return rsaKey, nil
 }
 func SaveRootCA(rootCA *RootCA, certPath, keyPath string) error {
 
