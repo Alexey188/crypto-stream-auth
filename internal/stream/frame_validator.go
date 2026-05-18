@@ -10,14 +10,16 @@ import (
 )
 
 var (
-	ErrValidateFrame = errors.New("validate frame")
+	ErrValidateFrame         = errors.New("validate frame")
+	ErrInvalidFrameSignature = errors.New("invalid frame signature")
 )
 
 type FrameValidator struct {
-	sessionID    [16]byte
-	publicKey    ed25519.PublicKey
-	lastSequence uint64
-	maxFrameAge  time.Duration
+	sessionID       [16]byte
+	publicKey       ed25519.PublicKey
+	lastSequence    uint64
+	hasLastSequence bool
+	maxFrameAge     time.Duration
 }
 
 func NewFrameValidator(sessionID [16]byte, publicKey ed25519.PublicKey, maxFrameAge time.Duration) (*FrameValidator, error) {
@@ -38,7 +40,7 @@ func NewFrameValidator(sessionID [16]byte, publicKey ed25519.PublicKey, maxFrame
 	return &FrameValidator{
 		sessionID:    sessionID,
 		publicKey:    publicKey,
-		lastSequence: 1,
+		lastSequence: 0,
 		maxFrameAge:  maxFrameAge,
 	}, nil
 }
@@ -58,7 +60,7 @@ func (validator *FrameValidator) ValidateFrame(frame *domain.VideoFrame) error {
 		return fmt.Errorf("%w: session id mismatch", ErrValidateFrame)
 	}
 
-	if frame.Sequence <= validator.lastSequence {
+	if validator.hasLastSequence && frame.Sequence <= validator.lastSequence {
 		return fmt.Errorf("%w: replay or old frame", ErrValidateFrame)
 	}
 
@@ -74,13 +76,14 @@ func (validator *FrameValidator) ValidateFrame(frame *domain.VideoFrame) error {
 	}
 	ok, err := crypto.VerifyFrameSignature(validator.publicKey, frame)
 	if err != nil {
-		return fmt.Errorf("%w: verify signature: %w", ErrValidateFrame, err)
+		return fmt.Errorf("%w: verify signature: %w", ErrInvalidFrameSignature, err)
 	}
 	if !ok {
-		return fmt.Errorf("%w: invalid signature", ErrValidateFrame)
+		return fmt.Errorf("%w: invalid signature", ErrInvalidFrameSignature)
+
 	}
 
 	validator.lastSequence = frame.Sequence
-
+	validator.hasLastSequence = true
 	return nil
 }

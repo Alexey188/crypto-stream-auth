@@ -1,0 +1,11 @@
+factory:
+  org_name: TrustCam Corp
+
+  root_ca:
+    cert_path: certs/root_ca.crt
+    key_path: certs/root_ca.key
+
+  camera:
+    id: cam-001
+    public_key_path: certs/camera_public.pem
+    cert_path: certs/camera.crt

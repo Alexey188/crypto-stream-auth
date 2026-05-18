@@ -1,0 +1,12 @@
+handshake:
+  max_age: 10s
+
+stream:
+  max_frame_age: 500ms
+
+frame_policy:
+  window_duration: 3s
+  min_frames: 30
+  max_bad_ratio: 0.20
+
+quic: {}
