@@ -21,4 +21,6 @@ func main() {
 	if err := authcrypto.SaveRootCA(rootCA, rootCertPath, rootKeyPath); err != nil {
 		log.Fatal(err)
 	}
+
+	log.Printf("root ca generated successfully: cert=%s key=%s", rootCertPath, rootKeyPath)
 }

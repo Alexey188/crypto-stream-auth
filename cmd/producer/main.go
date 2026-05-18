@@ -1,1 +1,4 @@
-package producer
+package main
+
+func main() {
+}

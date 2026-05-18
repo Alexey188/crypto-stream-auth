@@ -14,10 +14,11 @@ import (
 )
 
 var (
-	ErrGenerateRootCA         = errors.New("generate Certificate")
-	ErrLoadRootCA             = errors.New("load Certificate")
+	ErrGenerateRootCA         = errors.New("generate root ca certificate")
+	ErrLoadRootCA             = errors.New("load root ca certificate")
 	ErrIssueCameraCertificate = errors.New("issue camera certificate")
 	ErrSaveRootCA             = errors.New("save root ca")
+	ErrSaveCertificate        = errors.New("save certificate")
 )
 
 const (
@@ -257,5 +258,58 @@ func validateCameraPublicKey(key *rsa.PublicKey) error {
 	if key.N.BitLen() != cameraKeyBits {
 		return fmt.Errorf("public key size is %d bits, want %d", key.N.BitLen(), cameraKeyBits)
 	}
+	return nil
+}
+
+// Загрузка публичного ключа камеры (которая из tpm)
+func LoadRSAPublicKey(path string) (*rsa.PublicKey, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read public key: %w", err)
+	}
+
+	block, _ := pem.Decode(data)
+	if block == nil {
+		return nil, fmt.Errorf("decode camera public key")
+	}
+
+	switch block.Type {
+	case "PUBLIC KEY":
+		key, err := x509.ParsePKIXPublicKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("parse public key: %w", err)
+		}
+
+		rsaKey, ok := key.(*rsa.PublicKey)
+		if !ok {
+			return nil, fmt.Errorf("camera public key is not rsa")
+		}
+
+		return rsaKey, nil
+	case "RSA PUBLIC KEY":
+		key, err := x509.ParsePKCS1PublicKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("parse rsa public key: %w", err)
+		}
+		return key, nil
+	default:
+		return nil, fmt.Errorf("unsupported camera public key type %q", block.Type)
+	}
+}
+
+// сохранение сертификата камеры
+func SaveCertificate(cert *x509.Certificate, path string) error {
+	if cert == nil {
+		return fmt.Errorf("%w: certificate is nil", ErrSaveCertificate)
+	}
+
+	if err := os.WriteFile(
+		path,
+		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw}),
+		0644,
+	); err != nil {
+		return fmt.Errorf("%w: write certificate: %w", ErrSaveCertificate, err)
+	}
+
 	return nil
 }
