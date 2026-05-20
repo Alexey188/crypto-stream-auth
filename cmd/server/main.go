@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
 
@@ -16,6 +17,8 @@ const (
 	producerAddr = "127.0.0.1:4242"
 
 	handshakeTimeout       = 5 * time.Second
+	frameForwardTimeout    = 10 * time.Second
+	demoFrameCount         = 40
 	idleTimeout            = 30 * time.Second
 	handshakeFailedCode    = quic.ApplicationErrorCode(1)
 	handshakeCompletedCode = quic.ApplicationErrorCode(0)
@@ -67,36 +70,82 @@ func handleConsumerConnection(consumerConn *quic.Conn) (err error) {
 		return err
 	}
 
-	response, err := requestProducerHandshake(ctx, request)
+	response, producerConn, err := requestProducerHandshake(ctx, request)
 	if err != nil {
 		return err
 	}
+	defer closeConnection(producerConn, &err)
 
 	if err := transport.WriteHandshakeResponse(consumerStream, response); err != nil {
 		return err
 	}
 
 	log.Printf("handshake routed")
-	return nil
+
+	frameCtx, frameCancel := context.WithTimeout(context.Background(), frameForwardTimeout)
+	defer frameCancel()
+
+	return forwardFrames(frameCtx, producerConn, consumerConn)
 }
 
-func requestProducerHandshake(ctx context.Context, request *handshake.Request) (*handshake.Response, error) {
+func requestProducerHandshake(ctx context.Context, request *handshake.Request) (*handshake.Response, *quic.Conn, error) {
 	producerConn, err := transport.Dial(ctx, producerAddr, transport.NewLocalClientTLSConfig(), quicConfig())
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	defer producerConn.CloseWithError(handshakeCompletedCode, "server done")
 
 	producerStream, err := transport.OpenHandshakeStream(ctx, producerConn)
 	if err != nil {
-		return nil, err
+		_ = producerConn.CloseWithError(handshakeFailedCode, "handshake failed")
+		return nil, nil, err
 	}
 
 	if err := transport.WriteHandshakeRequest(producerStream, request); err != nil {
-		return nil, err
+		_ = producerConn.CloseWithError(handshakeFailedCode, "handshake failed")
+		return nil, nil, err
 	}
 
-	return transport.ReadHandshakeResponse(ctx, producerStream)
+	response, err := transport.ReadHandshakeResponse(ctx, producerStream)
+	if err != nil {
+		_ = producerConn.CloseWithError(handshakeFailedCode, "handshake failed")
+		return nil, nil, err
+	}
+
+	return response, producerConn, nil
+}
+
+func forwardFrames(ctx context.Context, producerConn *quic.Conn, consumerConn *quic.Conn) error {
+	for i := 0; i < demoFrameCount; i++ {
+		producerStream, err := transport.AcceptStream(ctx, producerConn)
+		if err != nil {
+			return fmt.Errorf("accept producer frame stream: %w", err)
+		}
+
+		frame, err := transport.ReadFrame(ctx, producerStream)
+		if err != nil {
+			_ = producerStream.Close()
+			return fmt.Errorf("read producer frame: %w", err)
+		}
+		_ = producerStream.Close()
+
+		consumerStream, err := transport.OpenStream(ctx, consumerConn)
+		if err != nil {
+			return fmt.Errorf("open consumer frame stream: %w", err)
+		}
+
+		if err := transport.WriteFrame(consumerStream, frame); err != nil {
+			_ = consumerStream.Close()
+			return fmt.Errorf("write consumer frame: %w", err)
+		}
+
+		if err := consumerStream.Close(); err != nil {
+			return fmt.Errorf("close consumer frame stream: %w", err)
+		}
+
+		log.Printf("frame routed: sequence=%d payload_bytes=%d", frame.Sequence, len(frame.Payload))
+	}
+
+	return nil
 }
 
 func closeConnection(conn *quic.Conn, handlerErr *error) {
@@ -116,6 +165,6 @@ func quicConfig() *quic.Config {
 	return &quic.Config{
 		HandshakeIdleTimeout: handshakeTimeout,
 		MaxIdleTimeout:       idleTimeout,
-		MaxIncomingStreams:   4,
+		MaxIncomingStreams:   demoFrameCount + 1,
 	}
 }

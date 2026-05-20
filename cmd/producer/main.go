@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/hex"
+	"fmt"
 	"log"
 	"time"
 
 	authcrypto "crypto-stream-auth/internal/crypto"
+	"crypto-stream-auth/internal/domain"
 	"crypto-stream-auth/internal/handshake"
 	"crypto-stream-auth/internal/tpm"
 	"crypto-stream-auth/internal/transport"
@@ -22,6 +24,9 @@ const (
 	cameraKeyHandle uint32 = 0x81000001
 
 	handshakeTimeout       = 5 * time.Second
+	frameSendTimeout       = 10 * time.Second
+	frameInterval          = 100 * time.Millisecond
+	demoFrameCount         = 40
 	idleTimeout            = 30 * time.Second
 	handshakeFailedCode    = quic.ApplicationErrorCode(1)
 	handshakeCompletedCode = quic.ApplicationErrorCode(0)
@@ -100,6 +105,53 @@ func handleConnection(listener *quic.Listener, cameraCertificate *x509.Certifica
 	}
 
 	log.Printf("handshake ok: session_id=%s", hex.EncodeToString(session.SessionID[:]))
+
+	frameCtx, cancel := context.WithTimeout(context.Background(), frameSendTimeout)
+	defer cancel()
+
+	return sendDemoFrames(frameCtx, conn, session)
+}
+
+func sendDemoFrames(ctx context.Context, conn *quic.Conn, session *handshake.ProducerSession) error {
+	for sequence := uint64(1); sequence <= demoFrameCount; sequence++ {
+		frame := &domain.VideoFrame{
+			SessionID: session.SessionID,
+			Sequence:  sequence,
+			Timestamp: time.Now().Unix(),
+			Payload:   []byte(fmt.Sprintf("demo-frame-%d", sequence)),
+		}
+
+		if err := authcrypto.SignFrameSignature(session.EphemeralPrivateKey, frame); err != nil {
+			return fmt.Errorf("sign frame %d: %w", sequence, err)
+		}
+
+		stream, err := transport.OpenStream(ctx, conn)
+		if err != nil {
+			return fmt.Errorf("open frame stream %d: %w", sequence, err)
+		}
+
+		if err := transport.WriteFrame(stream, frame); err != nil {
+			_ = stream.Close()
+			return fmt.Errorf("write frame %d: %w", sequence, err)
+		}
+
+		if err := stream.Close(); err != nil {
+			return fmt.Errorf("close frame stream %d: %w", sequence, err)
+		}
+
+		log.Printf("frame sent: session_id=%s sequence=%d payload_bytes=%d",
+			hex.EncodeToString(frame.SessionID[:]),
+			frame.Sequence,
+			len(frame.Payload),
+		)
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("send frames: %w", ctx.Err())
+		case <-time.After(frameInterval):
+		}
+	}
+
 	return nil
 }
 
@@ -107,6 +159,6 @@ func quicConfig() *quic.Config {
 	return &quic.Config{
 		HandshakeIdleTimeout: handshakeTimeout,
 		MaxIdleTimeout:       idleTimeout,
-		MaxIncomingStreams:   4,
+		MaxIncomingStreams:   demoFrameCount + 1,
 	}
 }

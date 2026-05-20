@@ -72,12 +72,34 @@ func AcceptConnection(ctx context.Context, listener *quic.Listener) (*quic.Conn,
 	return conn, nil
 }
 
-func OpenHandshakeStream(ctx context.Context, conn *quic.Conn) (*quic.Stream, error) {
+func OpenStream(ctx context.Context, conn *quic.Conn) (*quic.Stream, error) {
 	if conn == nil {
 		return nil, fmt.Errorf("%w: connection is nil", ErrTransport)
 	}
 
 	stream, err := conn.OpenStreamSync(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("%w: open stream: %w", ErrTransport, err)
+	}
+
+	return stream, nil
+}
+
+func AcceptStream(ctx context.Context, conn *quic.Conn) (*quic.Stream, error) {
+	if conn == nil {
+		return nil, fmt.Errorf("%w: connection is nil", ErrTransport)
+	}
+
+	stream, err := conn.AcceptStream(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("%w: accept stream: %w", ErrTransport, err)
+	}
+
+	return stream, nil
+}
+
+func OpenHandshakeStream(ctx context.Context, conn *quic.Conn) (*quic.Stream, error) {
+	stream, err := OpenStream(ctx, conn)
 	if err != nil {
 		return nil, fmt.Errorf("%w: open handshake stream: %w", ErrTransport, err)
 	}
@@ -86,11 +108,7 @@ func OpenHandshakeStream(ctx context.Context, conn *quic.Conn) (*quic.Stream, er
 }
 
 func AcceptHandshakeStream(ctx context.Context, conn *quic.Conn) (*quic.Stream, error) {
-	if conn == nil {
-		return nil, fmt.Errorf("%w: connection is nil", ErrTransport)
-	}
-
-	stream, err := conn.AcceptStream(ctx)
+	stream, err := AcceptStream(ctx, conn)
 	if err != nil {
 		return nil, fmt.Errorf("%w: accept handshake stream: %w", ErrTransport, err)
 	}
