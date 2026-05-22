@@ -51,12 +51,12 @@ func TestFrameValidationAnomalies(t *testing.T) {
 		}
 	})
 
-	t.Run("rejects_expired_timestamp", func(t *testing.T) {
+	t.Run("rejects_invalid_timestamp", func(t *testing.T) {
 		publicKey, privateKey := newEd25519Keys(t)
 		sessionID := testStreamSessionID()
 		validator := newFrameValidator(t, sessionID, publicKey)
 
-		err := validator.ValidateFrame(signedFrame(t, privateKey, sessionID, 1, time.Now().Add(-2*time.Minute)))
+		err := validator.ValidateFrame(signedFrame(t, privateKey, sessionID, 1, time.Time{}))
 		if !errors.Is(err, ErrValidateFrame) {
 			t.Fatalf("ValidateFrame() error = %v, want %v", err, ErrValidateFrame)
 		}
@@ -105,7 +105,7 @@ func newEd25519Keys(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 func newFrameValidator(t *testing.T, sessionID [16]byte, publicKey ed25519.PublicKey) *FrameValidator {
 	t.Helper()
 
-	validator, err := NewFrameValidator(sessionID, publicKey, time.Minute)
+	validator, err := NewFrameValidator(sessionID, publicKey)
 	if err != nil {
 		t.Fatalf("NewFrameValidator() error = %v", err)
 	}
@@ -120,7 +120,7 @@ func signedFrame(t *testing.T, privateKey ed25519.PrivateKey, sessionID [16]byte
 		SessionID: sessionID,
 		Sequence:  sequence,
 		Timestamp: timestamp.Unix(),
-		Payload:   []byte("nalu"),
+		Payload:   []byte("payload"),
 	}
 
 	if err := authcrypto.SignFrameSignature(privateKey, frame); err != nil {

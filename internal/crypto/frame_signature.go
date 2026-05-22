@@ -7,12 +7,8 @@ import (
 	"fmt"
 )
 
-var (
-	ErrFrameSignature = errors.New("frame signature")
-)
+var ErrFrameSignature = errors.New("frame signature")
 
-// SignFrame генерирует подпись для видеокадра, используя приватный ключ сессии.
-// Результат помещается в поле frame.Signature.
 func SignFrameSignature(privateKey ed25519.PrivateKey, frame *domain.VideoFrame) error {
 	if frame == nil {
 		return fmt.Errorf("%w: video frame is nil", ErrFrameSignature)
@@ -23,35 +19,24 @@ func SignFrameSignature(privateKey ed25519.PrivateKey, frame *domain.VideoFrame)
 	if len(privateKey) != ed25519.PrivateKeySize {
 		return fmt.Errorf("%w: invalid private key size", ErrFrameSignature)
 	}
-	bytesToSign := frame.BytesToSign()
 
-	signature := ed25519.Sign(privateKey, bytesToSign)
-
-	copy(frame.Signature[:], signature)
-
+	copy(frame.Signature[:], ed25519.Sign(privateKey, frame.BytesToSign()))
 	return nil
 }
 
-// VerifyFrame проверяет, является ли подпись видеокадра действительной для его содержимого,
-// используя публичный ключ сессии.
-func VerifyFrameSignature(publicKey ed25519.PublicKey, frame *domain.VideoFrame) (bool, error) {
+func VerifyFrameSignature(publicKey ed25519.PublicKey, frame *domain.VideoFrame) error {
 	if frame == nil {
-		return false, fmt.Errorf("%w: video frame is nil", ErrFrameSignature)
+		return fmt.Errorf("%w: video frame is nil", ErrFrameSignature)
 	}
 	if publicKey == nil {
-		return false, fmt.Errorf("%w: public key is nil", ErrFrameSignature)
+		return fmt.Errorf("%w: public key is nil", ErrFrameSignature)
 	}
 	if len(publicKey) != ed25519.PublicKeySize {
-		return false, fmt.Errorf("%w: invalid public key size", ErrFrameSignature)
+		return fmt.Errorf("%w: invalid public key size", ErrFrameSignature)
+	}
+	if !ed25519.Verify(publicKey, frame.BytesToSign(), frame.Signature[:]) {
+		return fmt.Errorf("%w: invalid signature for sequence %d", ErrFrameSignature, frame.Sequence)
 	}
 
-	bytesToVerify := frame.BytesToSign()
-
-	signature := frame.Signature[:]
-
-	if !ed25519.Verify(publicKey, bytesToVerify, signature) {
-		return false, fmt.Errorf("%w: invalid signature for sequence %d", ErrFrameSignature, frame.Sequence)
-	}
-
-	return true, nil
+	return nil
 }

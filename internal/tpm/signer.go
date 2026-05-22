@@ -14,9 +14,9 @@ import (
 var ErrTPMSigner = errors.New("tpm signer")
 
 type Signer struct {
-	tpm    transport.TPMCloser // Открытое соединение с TPM
-	handle tpm2.NamedHandle    //Ссылка на ключ внутри TPM
-	auth   []byte              // Пароль/секрет доступа к ключу TPM
+	tpm    transport.TPMCloser
+	handle tpm2.NamedHandle
+	auth   []byte
 }
 
 func OpenSigner(persistentHandle uint32, auth []byte) (*Signer, error) {
@@ -93,8 +93,8 @@ func (s *Signer) PublicKey() (*rsa.PublicKey, error) {
 	if publicKey.N == nil {
 		return nil, fmt.Errorf("%w: rsa modulus is nil", ErrTPMSigner)
 	}
-	if publicKey.N.BitLen() != 2048 {
-		return nil, fmt.Errorf("%w: rsa key size is %d bits, want 2048", ErrTPMSigner, publicKey.N.BitLen())
+	if publicKey.N.BitLen() != signingRSAKeyBits {
+		return nil, fmt.Errorf("%w: rsa key size is %d bits, want %d", ErrTPMSigner, publicKey.N.BitLen(), signingRSAKeyBits)
 	}
 
 	return publicKey, nil

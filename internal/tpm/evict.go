@@ -8,7 +8,7 @@ import (
 )
 
 func EvictSigner(persistentHandle uint32, ownerAuth []byte) error {
-	if err := validatePersistentHandle(persistentHandle); err != nil {
+	if err := ValidatePersistentHandle(persistentHandle); err != nil {
 		return err
 	}
 

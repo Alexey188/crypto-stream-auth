@@ -11,7 +11,6 @@ type FramePolicyAction int
 const (
 	FramePolicyActionNone FramePolicyAction = iota
 	FramePolicyActionRehandshake
-	FramePolicyActionDropConnection
 )
 
 var ErrFramePolicy = errors.New("invalid frame policy")
@@ -24,8 +23,6 @@ type FramePolicy struct {
 	windowStartedAt time.Time
 	totalFrames     int
 	badSignatures   int
-
-	rehandshakeAlreadyRequested bool
 }
 
 func NewFramePolicy(windowDuration time.Duration, minFrames int, maxBadRatio float64) (*FramePolicy, error) {
@@ -50,7 +47,7 @@ func NewFramePolicy(windowDuration time.Duration, minFrames int, maxBadRatio flo
 
 func (p *FramePolicy) RecordFrame(signatureInvalid bool, now time.Time) FramePolicyAction {
 	if p == nil {
-		return FramePolicyActionDropConnection
+		return FramePolicyActionRehandshake
 	}
 
 	if p.windowStartedAt.IsZero() {
@@ -102,10 +99,5 @@ func (p *FramePolicy) evaluateWindow() FramePolicyAction {
 		return FramePolicyActionNone
 	}
 
-	if p.rehandshakeAlreadyRequested {
-		return FramePolicyActionDropConnection
-	}
-
-	p.rehandshakeAlreadyRequested = true
 	return FramePolicyActionRehandshake
 }

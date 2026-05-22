@@ -21,12 +21,8 @@ func TestFrameSignature(t *testing.T) {
 			t.Fatalf("SignFrameSignature() error = %v", err)
 		}
 
-		ok, err := VerifyFrameSignature(publicKey, frame)
-		if err != nil {
+		if err := VerifyFrameSignature(publicKey, frame); err != nil {
 			t.Fatalf("VerifyFrameSignature() error = %v", err)
-		}
-		if !ok {
-			t.Fatalf("VerifyFrameSignature() ok = false, want true")
 		}
 	})
 
@@ -42,12 +38,9 @@ func TestFrameSignature(t *testing.T) {
 		}
 		frame.Payload[0] ^= 1
 
-		ok, err := VerifyFrameSignature(publicKey, frame)
+		err = VerifyFrameSignature(publicKey, frame)
 		if !errors.Is(err, ErrFrameSignature) {
 			t.Fatalf("VerifyFrameSignature() error = %v, want %v", err, ErrFrameSignature)
-		}
-		if ok {
-			t.Fatalf("VerifyFrameSignature() ok = true, want false")
 		}
 	})
 }
@@ -60,6 +53,6 @@ func testVideoFrame() *domain.VideoFrame {
 		SessionID: sessionID,
 		Sequence:  1,
 		Timestamp: time.Now().Unix(),
-		Payload:   []byte("nalu"),
+		Payload:   []byte("payload"),
 	}
 }

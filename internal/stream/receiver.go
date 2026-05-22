@@ -13,15 +13,12 @@ import (
 	quic "github.com/quic-go/quic-go"
 )
 
-const maxReorderBufferFrames = transport.MediaStreamCount * 2
-
 var (
 	ErrRehandshakeRequired = errors.New("rehandshake required")
 	ErrUntrustedConnection = errors.New("untrusted connection")
 )
 
 type ReceiveOptions struct {
-	MaxFrameAge       time.Duration
 	PolicyWindow      time.Duration
 	PolicyMinFrames   int
 	PolicyBadRatio    float64
@@ -35,7 +32,7 @@ func ReceiveAndValidateFrames(ctx context.Context, conn *quic.Conn, session *han
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	validator, err := NewFrameValidator(session.SessionID, session.EphemeralPublicKey, options.MaxFrameAge)
+	validator, err := NewFrameValidator(session.SessionID, session.EphemeralPublicKey)
 	if err != nil {
 		return fmt.Errorf("create frame validator: %w", err)
 	}
@@ -59,8 +56,11 @@ func ReceiveAndValidateFrames(ctx context.Context, conn *quic.Conn, session *han
 	}
 	defer closeFrameStreams(frameStreams)
 
-	expectedSequence := uint64(1)
-	pendingFrames := make(map[uint64]transport.FrameReadResult)
+	statsWindowStarted := time.Now()
+	var statsAccepted uint64
+	var statsDropped uint64
+	var statsBadSignatures uint64
+	var statsPayloadBytes uint64
 
 	for result := range transport.ReadFramesFromStreams(ctx, frameStreams) {
 		if result.Err != nil {
@@ -71,46 +71,46 @@ func ReceiveAndValidateFrames(ctx context.Context, conn *quic.Conn, session *han
 			return fmt.Errorf("read frame from media stream %d: %w", result.StreamIndex, result.Err)
 		}
 
-		if result.Frame.Sequence < expectedSequence {
-			action, err := handleReceivedFrame(result, validator, policy, options.OnAcceptedPayload)
-			if err != nil {
-				return err
-			}
-			if err := handlePolicyAction(action); err != nil {
-				return err
-			}
-			continue
+		action, dropped, badSignature, payloadBytes, err := handleReceivedFrame(result, validator, policy, options.OnAcceptedPayload)
+		if err != nil {
+			return err
 		}
 
-		if _, exists := pendingFrames[result.Frame.Sequence]; exists {
-			log.Printf("frame dropped: sequence=%d media_stream=%d reason=duplicate pending sequence",
-				result.Frame.Sequence,
-				result.StreamIndex,
+		if dropped {
+			statsDropped++
+			if badSignature {
+				statsBadSignatures++
+			}
+		} else {
+			statsAccepted++
+			statsPayloadBytes += uint64(payloadBytes)
+		}
+
+		now := time.Now()
+		if now.Sub(statsWindowStarted) >= time.Second {
+			elapsed := now.Sub(statsWindowStarted).Seconds()
+			avgPayload := uint64(0)
+			if statsAccepted > 0 {
+				avgPayload = statsPayloadBytes / statsAccepted
+			}
+			log.Printf("consumer stats: accepted=%d dropped=%d bad_signatures=%d bytes=%d fps=%.1f avg_payload=%d",
+				statsAccepted,
+				statsDropped,
+				statsBadSignatures,
+				statsPayloadBytes,
+				float64(statsAccepted)/elapsed,
+				avgPayload,
 			)
-			continue
+
+			statsWindowStarted = now
+			statsAccepted = 0
+			statsDropped = 0
+			statsBadSignatures = 0
+			statsPayloadBytes = 0
 		}
 
-		if len(pendingFrames) >= maxReorderBufferFrames {
-			return fmt.Errorf("%w: reorder buffer overflow", ErrValidateFrame)
-		}
-
-		pendingFrames[result.Frame.Sequence] = result
-
-		for {
-			next, ok := pendingFrames[expectedSequence]
-			if !ok {
-				break
-			}
-			delete(pendingFrames, expectedSequence)
-
-			action, err := handleReceivedFrame(next, validator, policy, options.OnAcceptedPayload)
-			if err != nil {
-				return err
-			}
-			if err := handlePolicyAction(action); err != nil {
-				return err
-			}
-			expectedSequence++
+		if err := handlePolicyAction(action); err != nil {
+			return err
 		}
 	}
 
@@ -120,7 +120,7 @@ func ReceiveAndValidateFrames(ctx context.Context, conn *quic.Conn, session *han
 	return nil
 }
 
-func handleReceivedFrame(result transport.FrameReadResult, validator *FrameValidator, policy *FramePolicy, onAcceptedPayload func([]byte) error) (FramePolicyAction, error) {
+func handleReceivedFrame(result transport.FrameReadResult, validator *FrameValidator, policy *FramePolicy, onAcceptedPayload func([]byte) error) (FramePolicyAction, bool, bool, int, error) {
 	err := validator.ValidateFrame(result.Frame)
 	signatureInvalid := errors.Is(err, ErrInvalidFrameSignature)
 	action := policy.RecordFrame(signatureInvalid, time.Now())
@@ -133,30 +133,22 @@ func handleReceivedFrame(result transport.FrameReadResult, validator *FrameValid
 
 	if err != nil {
 		log.Printf("frame dropped: sequence=%d media_stream=%d reason=%v", sequence, result.StreamIndex, err)
-		return action, nil
+		return action, true, signatureInvalid, 0, nil
 	}
 
 	if onAcceptedPayload != nil {
 		if err := onAcceptedPayload(result.Frame.Payload); err != nil {
-			return action, fmt.Errorf("handle accepted payload: %w", err)
+			return action, false, false, payloadBytes, fmt.Errorf("handle accepted payload: %w", err)
 		}
 	}
 
-	log.Printf("frame accepted: sequence=%d media_stream=%d payload_bytes=%d",
-		sequence,
-		result.StreamIndex,
-		payloadBytes,
-	)
-
-	return action, nil
+	return action, false, false, payloadBytes, nil
 }
 
 func handlePolicyAction(action FramePolicyAction) error {
 	switch action {
 	case FramePolicyActionRehandshake:
 		return ErrRehandshakeRequired
-	case FramePolicyActionDropConnection:
-		return ErrUntrustedConnection
 	default:
 		return nil
 	}

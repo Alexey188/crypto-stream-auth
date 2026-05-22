@@ -34,7 +34,6 @@ type RootCA struct {
 	Certificate *x509.Certificate
 }
 
-// конструктор. инициализируем Приватный ключ и корневой сертификат.
 func GenerateRootCA(orgName string) (*RootCA, error) {
 	rootCA := &RootCA{}
 
@@ -170,19 +169,16 @@ func SaveRootCA(rootCA *RootCA, certPath, keyPath string) error {
 		return fmt.Errorf("%w: encode private key", ErrSaveRootCA)
 	}
 
-	if err := writeFileOnce(certPath, certPEM, 0644); err != nil {
-		return fmt.Errorf("%w: write root ca certificate: %w", ErrSaveRootCA, err)
-	}
-
-	if err := writeFileOnce(keyPath, keyPEM, 0600); err != nil {
-		return fmt.Errorf("%w: write root ca private key: %w", ErrSaveRootCA, err)
+	if err := writeFilesOnce([]fileToWrite{
+		{path: certPath, data: certPEM, perm: 0644},
+		{path: keyPath, data: keyPEM, perm: 0600},
+	}); err != nil {
+		return fmt.Errorf("%w: write root ca files: %w", ErrSaveRootCA, err)
 	}
 
 	return nil
 }
 
-// логика выпуска сертификатов для камеры
-// cameraPublicKey - из tpm модуля
 func IssueCameraCertificate(rootCA *RootCA, cameraID string, cameraPublicKey *rsa.PublicKey) (*x509.Certificate, error) {
 	if rootCA == nil {
 		return nil, fmt.Errorf("%w: RootCa is nil", ErrIssueCameraCertificate)
@@ -315,7 +311,6 @@ func validateCameraPublicKey(key *rsa.PublicKey) error {
 	return nil
 }
 
-// Загрузка публичного ключа камеры (которая из tpm)
 func LoadRSAPublicKey(path string) (*rsa.PublicKey, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -373,7 +368,6 @@ func SaveRSAPublicKey(publicKey *rsa.PublicKey, path string) error {
 	return nil
 }
 
-// сохранение сертификата камеры
 func SaveCertificate(cert *x509.Certificate, path string) error {
 	if cert == nil {
 		return fmt.Errorf("%w: certificate is nil", ErrSaveCertificate)
@@ -403,6 +397,56 @@ func writeFileOnce(path string, data []byte, perm os.FileMode) error {
 
 	if _, err := file.Write(data); err != nil {
 		return fmt.Errorf("write file: %w", err)
+	}
+
+	return nil
+}
+
+type fileToWrite struct {
+	path string
+	data []byte
+	perm os.FileMode
+}
+
+func writeFilesOnce(files []fileToWrite) (err error) {
+	opened := make([]*os.File, 0, len(files))
+	createdPaths := make([]string, 0, len(files))
+
+	defer func() {
+		for _, file := range opened {
+			if file != nil {
+				_ = file.Close()
+			}
+		}
+		if err != nil {
+			for _, path := range createdPaths {
+				_ = os.Remove(path)
+			}
+		}
+	}()
+
+	for _, file := range files {
+		if err := os.MkdirAll(filepath.Dir(file.path), 0755); err != nil {
+			return fmt.Errorf("create parent directory: %w", err)
+		}
+
+		openedFile, err := os.OpenFile(file.path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, file.perm)
+		if err != nil {
+			return fmt.Errorf("create file once %s: %w", file.path, err)
+		}
+
+		opened = append(opened, openedFile)
+		createdPaths = append(createdPaths, file.path)
+	}
+
+	for i, file := range files {
+		if _, err := opened[i].Write(file.data); err != nil {
+			return fmt.Errorf("write file %s: %w", file.path, err)
+		}
+		if err := opened[i].Close(); err != nil {
+			return fmt.Errorf("close file %s: %w", file.path, err)
+		}
+		opened[i] = nil
 	}
 
 	return nil

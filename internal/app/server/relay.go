@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"time"
 
 	quic "github.com/quic-go/quic-go"
 )
@@ -81,6 +82,10 @@ func ForwardFrames(ctx context.Context, producerConn *quic.Conn, consumerConn *q
 	}
 	defer closeStreams(consumerStreams)
 
+	statsWindowStarted := time.Now()
+	var statsFrames uint64
+	var statsPayloadBytes uint64
+
 	for result := range transport.ReadFramesFromStreams(ctx, producerStreams) {
 		if result.Err != nil {
 			if errors.Is(result.Err, io.EOF) || transport.IsGracefulRemoteClose(result.Err) {
@@ -95,11 +100,27 @@ func ForwardFrames(ctx context.Context, producerConn *quic.Conn, consumerConn *q
 			return fmt.Errorf("write consumer frame to media stream %d: %w", result.StreamIndex, err)
 		}
 
-		log.Printf("frame routed: sequence=%d media_stream=%d payload_bytes=%d",
-			result.Frame.Sequence,
-			result.StreamIndex,
-			len(result.Frame.Payload),
-		)
+		statsFrames++
+		statsPayloadBytes += uint64(len(result.Frame.Payload))
+
+		now := time.Now()
+		if now.Sub(statsWindowStarted) >= time.Second {
+			elapsed := now.Sub(statsWindowStarted).Seconds()
+			avgPayload := uint64(0)
+			if statsFrames > 0 {
+				avgPayload = statsPayloadBytes / statsFrames
+			}
+			log.Printf("server relay stats: frames=%d bytes=%d fps=%.1f avg_payload=%d",
+				statsFrames,
+				statsPayloadBytes,
+				float64(statsFrames)/elapsed,
+				avgPayload,
+			)
+
+			statsWindowStarted = now
+			statsFrames = 0
+			statsPayloadBytes = 0
+		}
 	}
 
 	if err := ctx.Err(); err != nil {

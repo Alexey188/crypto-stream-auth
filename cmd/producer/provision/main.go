@@ -7,10 +7,8 @@ import (
 	"log"
 )
 
-// TODO: если KeyHandle у tpm уже занят, нужно выбрать свободный идентификатор
 const (
-	cameraKeyHandle    uint32 = 0x81000001
-	cameraPublicKeyPem        = "artifacts/keys/camera_public.pem"
+	cameraPublicKeyPem = "artifacts/keys/camera_public.pem"
 )
 
 var (
@@ -18,13 +16,13 @@ var (
 )
 
 func main() {
-	signer, err := tpm.OpenSigner(cameraKeyHandle, nil)
+	signer, err := tpm.OpenSigner(tpm.DefaultCameraKeyHandle, nil)
 	if err != nil {
 		if !tpm.IsPersistentHandleNotFound(err) {
 			log.Fatalf("open existing tpm camera key: %v", err)
 		}
 
-		signer, err = tpm.ProvisionSigner(cameraKeyHandle, nil, nil)
+		signer, err = tpm.ProvisionSigner(tpm.DefaultCameraKeyHandle, nil, nil)
 		if err != nil {
 			log.Fatalf("provision tpm camera key: %v", err)
 		}

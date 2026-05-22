@@ -4,19 +4,26 @@ import (
 	"encoding/binary"
 )
 
-const MaxFramePayloadSize = 256 * 1024
+const (
+	SessionIDSize       = 16
+	FrameSignatureSize  = 64
+	MaxFramePayloadSize = 256 * 1024
+)
+
+type SessionID = [SessionIDSize]byte
+type FrameSignature = [FrameSignatureSize]byte
 
 type VideoFrame struct {
-	SessionID [16]byte
-	Sequence  uint64 // Это счетчик кадров
+	SessionID SessionID
+	Sequence  uint64
 	Timestamp int64
 	Payload   []byte
-	Signature [64]byte
+	Signature FrameSignature
 }
 
 func (f *VideoFrame) BytesToSign() []byte {
 
-	buf := make([]byte, 0, 16+8+8+len(f.Payload))
+	buf := make([]byte, 0, SessionIDSize+8+8+len(f.Payload))
 
 	buf = append(buf, f.SessionID[:]...)
 	buf = binary.BigEndian.AppendUint64(buf, f.Sequence)

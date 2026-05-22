@@ -13,11 +13,6 @@ import (
 
 var ErrMedia = errors.New("media")
 
-type Source interface {
-	NextPayload(ctx context.Context) ([]byte, error)
-	Close() error
-}
-
 type FFplaySink struct {
 	cmd   *exec.Cmd
 	stdin io.WriteCloser
@@ -26,7 +21,7 @@ type FFplaySink struct {
 	closeErr  error
 }
 
-type FFmpegH264SourceConfig struct {
+type FFmpegSourceConfig struct {
 	FFmpegPath     string
 	Width          int
 	Height         int
@@ -34,7 +29,7 @@ type FFmpegH264SourceConfig struct {
 	MaxPayloadSize int
 }
 
-type FFmpegH264Source struct {
+type FFmpegSource struct {
 	cmd    *exec.Cmd
 	stdout io.ReadCloser
 	reader *PayloadReader
@@ -43,7 +38,7 @@ type FFmpegH264Source struct {
 	closeErr  error
 }
 
-func NewFFmpegH264Source(ctx context.Context, cfg FFmpegH264SourceConfig) (*FFmpegH264Source, error) {
+func NewFFmpegSource(ctx context.Context, cfg FFmpegSourceConfig) (*FFmpegSource, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -61,14 +56,14 @@ func NewFFmpegH264Source(ctx context.Context, cfg FFmpegH264SourceConfig) (*FFmp
 		return nil, fmt.Errorf("%w: start ffmpeg: %w", ErrMedia, err)
 	}
 
-	return &FFmpegH264Source{
+	return &FFmpegSource{
 		cmd:    cmd,
 		stdout: stdout,
 		reader: NewPayloadReader(stdout, cfg.MaxPayloadSize),
 	}, nil
 }
 
-func (s *FFmpegH264Source) NextPayload(ctx context.Context) ([]byte, error) {
+func (s *FFmpegSource) NextPayload(ctx context.Context) ([]byte, error) {
 	if s == nil || s.reader == nil {
 		return nil, fmt.Errorf("%w: ffmpeg source is nil", ErrMedia)
 	}
@@ -76,25 +71,23 @@ func (s *FFmpegH264Source) NextPayload(ctx context.Context) ([]byte, error) {
 		ctx = context.Background()
 	}
 
-	result := make(chan payloadResult, 1)
-	go func() {
-		payload, err := s.reader.NextPayload()
-		result <- payloadResult{payload: payload, err: err}
-	}()
-
-	select {
-	case <-ctx.Done():
+	if err := ctx.Err(); err != nil {
 		_ = s.Close()
-		return nil, fmt.Errorf("%w: read payload cancelled: %w", ErrMedia, ctx.Err())
-	case result := <-result:
-		if result.err != nil {
-			return nil, fmt.Errorf("%w: read payload: %w", ErrMedia, result.err)
-		}
-		return result.payload, nil
+		return nil, fmt.Errorf("%w: read payload cancelled: %w", ErrMedia, err)
 	}
+
+	payload, err := s.reader.NextPayload()
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, fmt.Errorf("%w: read payload cancelled: %w", ErrMedia, ctxErr)
+		}
+		return nil, fmt.Errorf("%w: read payload: %w", ErrMedia, err)
+	}
+
+	return payload, nil
 }
 
-func (s *FFmpegH264Source) Close() error {
+func (s *FFmpegSource) Close() error {
 	if s == nil {
 		return nil
 	}
@@ -145,7 +138,7 @@ func (s *FFplaySink) WritePayload(payload []byte) error {
 		return fmt.Errorf("%w: ffplay sink is nil", ErrMedia)
 	}
 	if len(payload) == 0 {
-		return fmt.Errorf("%w: h264 payload is empty", ErrMedia)
+		return fmt.Errorf("%w: payload is empty", ErrMedia)
 	}
 	if _, err := s.stdin.Write(payload); err != nil {
 		return fmt.Errorf("%w: write ffplay payload: %w", ErrMedia, err)
@@ -175,12 +168,7 @@ func (s *FFplaySink) Close() error {
 	return nil
 }
 
-type payloadResult struct {
-	payload []byte
-	err     error
-}
-
-func normalizeFFmpegConfig(cfg FFmpegH264SourceConfig) FFmpegH264SourceConfig {
+func normalizeFFmpegConfig(cfg FFmpegSourceConfig) FFmpegSourceConfig {
 	if cfg.FFmpegPath == "" {
 		cfg.FFmpegPath = "ffmpeg"
 	}
@@ -199,15 +187,20 @@ func normalizeFFmpegConfig(cfg FFmpegH264SourceConfig) FFmpegH264SourceConfig {
 	return cfg
 }
 
-func ffmpegArgs(cfg FFmpegH264SourceConfig) []string {
-	//size := strconv.Itoa(cfg.Width) + "x" + strconv.Itoa(cfg.Height)
+func ffmpegArgs(cfg FFmpegSourceConfig) []string {
+	size := strconv.Itoa(cfg.Width) + "x" + strconv.Itoa(cfg.Height)
 	rate := strconv.Itoa(cfg.FPS)
 
 	return []string{
 		"-hide_banner",
 		"-loglevel", "error",
-		"-re",
+		"-fflags", "nobuffer",
+		"-flags", "low_delay",
+		"-probesize", "32",
+		"-analyzeduration", "0",
 		"-f", "dshow",
+		"-framerate", rate,
+		"-video_size", size,
 		"-i", "video=HD User Facing",
 		"-an",
 		"-c:v", "libx264",

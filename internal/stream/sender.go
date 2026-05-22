@@ -5,9 +5,7 @@ import (
 	authcrypto "crypto-stream-auth/internal/crypto"
 	"crypto-stream-auth/internal/domain"
 	"crypto-stream-auth/internal/handshake"
-	"crypto-stream-auth/internal/media"
 	"crypto-stream-auth/internal/transport"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -17,7 +15,11 @@ import (
 	quic "github.com/quic-go/quic-go"
 )
 
-func SendSignedFrames(ctx context.Context, conn *quic.Conn, session *handshake.ProducerSession, source media.Source) error {
+type PayloadSource interface {
+	NextPayload(ctx context.Context) ([]byte, error)
+}
+
+func SendSignedFrames(ctx context.Context, conn *quic.Conn, session *handshake.ProducerSession, source PayloadSource) error {
 	if session == nil {
 		return fmt.Errorf("%w: producer session is nil", ErrValidateFrame)
 	}
@@ -38,6 +40,10 @@ func SendSignedFrames(ctx context.Context, conn *quic.Conn, session *handshake.P
 			_ = frameStream.Close()
 		}
 	}()
+
+	statsWindowStarted := time.Now()
+	var statsFrames uint64
+	var statsPayloadBytes uint64
 
 	for sequence := uint64(1); ; sequence++ {
 		payload, err := source.NextPayload(ctx)
@@ -67,12 +73,27 @@ func SendSignedFrames(ctx context.Context, conn *quic.Conn, session *handshake.P
 			return fmt.Errorf("write frame %d to media stream %d: %w", sequence, streamIndex, err)
 		}
 
-		log.Printf("frame sent: session_id=%s sequence=%d media_stream=%d payload_bytes=%d",
-			hex.EncodeToString(frame.SessionID[:]),
-			frame.Sequence,
-			streamIndex,
-			len(frame.Payload),
-		)
+		statsFrames++
+		statsPayloadBytes += uint64(len(payload))
+
+		now := time.Now()
+		if now.Sub(statsWindowStarted) >= time.Second {
+			elapsed := now.Sub(statsWindowStarted).Seconds()
+			avgPayload := uint64(0)
+			if statsFrames > 0 {
+				avgPayload = statsPayloadBytes / statsFrames
+			}
+			log.Printf("producer stats: frames=%d bytes=%d fps=%.1f avg_payload=%d",
+				statsFrames,
+				statsPayloadBytes,
+				float64(statsFrames)/elapsed,
+				avgPayload,
+			)
+
+			statsWindowStarted = now
+			statsFrames = 0
+			statsPayloadBytes = 0
+		}
 
 		select {
 		case <-ctx.Done():

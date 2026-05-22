@@ -18,7 +18,7 @@ func TestFramePolicyAnomalies(t *testing.T) {
 		}
 	})
 
-	t.Run("requests_rehandshake_then_drops_connection", func(t *testing.T) {
+	t.Run("requests_rehandshake", func(t *testing.T) {
 		policy, err := NewFramePolicy(3*time.Second, 30, 0.2)
 		if err != nil {
 			t.Fatalf("NewFramePolicy() error = %v", err)
@@ -27,12 +27,7 @@ func TestFramePolicyAnomalies(t *testing.T) {
 		now := time.Now()
 		action := recordFrames(policy, 31, 7, now)
 		if action != FramePolicyActionRehandshake {
-			t.Fatalf("first action = %v, want %v", action, FramePolicyActionRehandshake)
-		}
-
-		action = recordFrames(policy, 31, 7, now.Add(time.Second))
-		if action != FramePolicyActionDropConnection {
-			t.Fatalf("second action = %v, want %v", action, FramePolicyActionDropConnection)
+			t.Fatalf("action = %v, want %v", action, FramePolicyActionRehandshake)
 		}
 	})
 }

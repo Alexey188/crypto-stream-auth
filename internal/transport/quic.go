@@ -18,7 +18,7 @@ var ErrTransport = errors.New("transport")
 
 const (
 	ALPN             = "crypto-stream-auth/1"
-	MediaStreamCount = 1
+	MediaStreamCount = 1 // пока не трогать надо будет делать sequence буффер
 
 	lengthFieldSize    = 2
 	timestampFieldSize = 8

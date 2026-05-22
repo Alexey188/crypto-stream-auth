@@ -2,11 +2,11 @@ package transport
 
 import (
 	"context"
-	"crypto/ed25519"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"sync"
+	"time"
 
 	"crypto-stream-auth/internal/domain"
 	"crypto-stream-auth/internal/handshake"
@@ -18,7 +18,6 @@ const (
 	uint32Size             = 4
 	uint64Size             = 8
 	frameHeaderSize        = handshake.SessionIDSize + uint64Size + uint64Size + uint32Size
-	minEncodedFrameSize    = frameHeaderSize + ed25519.SignatureSize
 	framePayloadLengthFrom = handshake.SessionIDSize + uint64Size + uint64Size
 )
 
@@ -26,55 +25,6 @@ type FrameReadResult struct {
 	StreamIndex int
 	Frame       *domain.VideoFrame
 	Err         error
-}
-
-func EncodeFrame(frame *domain.VideoFrame) ([]byte, error) {
-	if err := validateFrameForWrite(frame); err != nil {
-		return nil, err
-	}
-
-	data := make([]byte, 0, encodedFrameSize(frame))
-	data = append(data, frame.SessionID[:]...)
-	data = binary.BigEndian.AppendUint64(data, frame.Sequence)
-	data = binary.BigEndian.AppendUint64(data, uint64(frame.Timestamp))
-	data = binary.BigEndian.AppendUint32(data, uint32(len(frame.Payload)))
-	data = append(data, frame.Payload...)
-	data = append(data, frame.Signature[:]...)
-
-	return data, nil
-}
-
-func DecodeFrame(data []byte) (*domain.VideoFrame, error) {
-	if len(data) < minEncodedFrameSize {
-		return nil, fmt.Errorf("%w: frame is truncated", ErrTransport)
-	}
-
-	payloadSize := int(binary.BigEndian.Uint32(data[framePayloadLengthFrom : framePayloadLengthFrom+uint32Size]))
-	if payloadSize > domain.MaxFramePayloadSize {
-		return nil, fmt.Errorf("%w: frame payload is too large", ErrTransport)
-	}
-	if len(data) != frameHeaderSize+payloadSize+ed25519.SignatureSize {
-		return nil, fmt.Errorf("%w: frame has trailing or missing bytes", ErrTransport)
-	}
-
-	offset := 0
-	frame := &domain.VideoFrame{}
-
-	copy(frame.SessionID[:], data[offset:offset+handshake.SessionIDSize])
-	offset += handshake.SessionIDSize
-
-	frame.Sequence = binary.BigEndian.Uint64(data[offset : offset+uint64Size])
-	offset += uint64Size
-
-	frame.Timestamp = int64(binary.BigEndian.Uint64(data[offset : offset+uint64Size]))
-	offset += uint64Size + uint32Size
-
-	frame.Payload = append([]byte(nil), data[offset:offset+payloadSize]...)
-	offset += payloadSize
-
-	copy(frame.Signature[:], data[offset:offset+ed25519.SignatureSize])
-
-	return frame, nil
 }
 
 func WriteFrame(stream *quic.Stream, frame *domain.VideoFrame) error {
@@ -199,10 +149,6 @@ func sendFrameReadResult(ctx context.Context, results chan<- FrameReadResult, re
 	}
 }
 
-func encodedFrameSize(frame *domain.VideoFrame) int {
-	return frameHeaderSize + len(frame.Payload) + ed25519.SignatureSize
-}
-
 func writeAll(stream *quic.Stream, data []byte) error {
 	for len(data) > 0 {
 		n, err := stream.Write(data)
@@ -219,17 +165,25 @@ func writeAll(stream *quic.Stream, data []byte) error {
 }
 
 func readFull(ctx context.Context, stream *quic.Stream, data []byte) error {
-	result := make(chan error, 1)
-	go func() {
-		_, err := io.ReadFull(stream, data)
-		result <- err
-	}()
-
-	select {
-	case <-ctx.Done():
+	if err := ctx.Err(); err != nil {
 		stream.CancelRead(0)
-		return ctx.Err()
-	case err := <-result:
 		return err
 	}
+
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := stream.SetReadDeadline(deadline); err != nil {
+			return err
+		}
+		defer stream.SetReadDeadline(time.Time{})
+	}
+
+	_, err := io.ReadFull(stream, data)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		return err
+	}
+
+	return nil
 }

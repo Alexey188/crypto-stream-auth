@@ -30,7 +30,7 @@ type Options struct {
 	CameraKeyHandle  uint32
 	HandshakeTimeout time.Duration
 	IdleTimeout      time.Duration
-	MediaSource      media.FFmpegH264SourceConfig
+	MediaSource      media.FFmpegSourceConfig
 }
 
 type Producer struct {
@@ -148,7 +148,7 @@ func (p *Producer) handleConnection(parentCtx context.Context, conn *quic.Conn) 
 
 	log.Printf("handshake ok: session_id=%s", hex.EncodeToString(session.SessionID[:]))
 
-	source, err := media.NewFFmpegH264Source(sessionCtx, p.options.MediaSource)
+	source, err := media.NewFFmpegSource(sessionCtx, p.options.MediaSource)
 	if err != nil {
 		return fmt.Errorf("create media source: %w", err)
 	}

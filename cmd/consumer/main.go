@@ -14,7 +14,6 @@ const (
 
 	handshakeTimeout   = 5 * time.Second
 	maxHandshakeAge    = 10 * time.Second
-	maxFrameAge        = 5 * time.Second
 	maxSessionAttempts = 2
 	idleTimeout        = 30 * time.Second
 )
@@ -26,7 +25,6 @@ func main() {
 		FFplayPath:         ffplayPath,
 		HandshakeTimeout:   handshakeTimeout,
 		MaxHandshakeAge:    maxHandshakeAge,
-		MaxFrameAge:        maxFrameAge,
 		MaxSessionAttempts: maxSessionAttempts,
 		IdleTimeout:        idleTimeout,
 		PolicyWindow:       3 * time.Second,

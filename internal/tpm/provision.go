@@ -9,17 +9,15 @@ import (
 	"github.com/google/go-tpm/tpm2/transport/windowstpm"
 )
 
-// границы области идентификаторов, где TPM разрешает хранить постоянные объекты
 const (
-	minPersistentHandle uint32 = 0x81000000
-	maxPersistentHandle uint32 = 0x81FFFFFF
+	signingRSAKeyBits = 2048
 )
 
 func IsPersistentHandleNotFound(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "TPM_RC_HANDLE")
 }
 func ProvisionSigner(persistentHandle uint32, ownerAuth []byte, keyAuth []byte) (*Signer, error) {
-	if err := validatePersistentHandle(persistentHandle); err != nil {
+	if err := ValidatePersistentHandle(persistentHandle); err != nil {
 		return nil, err
 	}
 
@@ -118,7 +116,7 @@ func createSigningPrimary(tpmDevice transport.TPM, ownerAuth []byte, keyAuth []b
 							},
 						),
 					},
-					KeyBits:  2048,
+					KeyBits:  signingRSAKeyBits,
 					Exponent: 0,
 				},
 			),
@@ -129,14 +127,6 @@ func createSigningPrimary(tpmDevice transport.TPM, ownerAuth []byte, keyAuth []b
 	}
 
 	return response, nil
-}
-
-func validatePersistentHandle(handle uint32) error {
-	if handle < minPersistentHandle || handle > maxPersistentHandle {
-		return fmt.Errorf("%w: persistent handle 0x%x is outside 0x%x-0x%x", ErrTPMSigner, handle, minPersistentHandle, maxPersistentHandle)
-	}
-
-	return nil
 }
 
 func ownerHandle(ownerAuth []byte) tpm2.AuthHandle {

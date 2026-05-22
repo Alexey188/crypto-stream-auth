@@ -22,7 +22,6 @@ type Options struct {
 	FFplayPath         string
 	HandshakeTimeout   time.Duration
 	MaxHandshakeAge    time.Duration
-	MaxFrameAge        time.Duration
 	MaxSessionAttempts int
 	IdleTimeout        time.Duration
 	PolicyWindow       time.Duration
@@ -119,10 +118,9 @@ func (c *Consumer) runSession(parentCtx context.Context) error {
 		}
 	}()
 
-	log.Printf("playing live h264 stream")
+	log.Printf("playing live video stream")
 
 	if err := streamauth.ReceiveAndValidateFrames(sessionCtx, conn, session, streamauth.ReceiveOptions{
-		MaxFrameAge:       c.options.MaxFrameAge,
 		PolicyWindow:      c.options.PolicyWindow,
 		PolicyMinFrames:   c.options.PolicyMinFrames,
 		PolicyBadRatio:    c.options.PolicyBadRatio,
