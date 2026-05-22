@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"sync"
 
 	"crypto-stream-auth/internal/domain"
 	"crypto-stream-auth/internal/handshake"
@@ -14,18 +15,21 @@ import (
 )
 
 const (
-	MaxFramePayloadSize = 2 * 1024 * 1024
-
 	uint32Size             = 4
 	uint64Size             = 8
 	frameHeaderSize        = handshake.SessionIDSize + uint64Size + uint64Size + uint32Size
 	minEncodedFrameSize    = frameHeaderSize + ed25519.SignatureSize
-	maxEncodedFrameSize    = frameHeaderSize + MaxFramePayloadSize + ed25519.SignatureSize
 	framePayloadLengthFrom = handshake.SessionIDSize + uint64Size + uint64Size
 )
 
+type FrameReadResult struct {
+	StreamIndex int
+	Frame       *domain.VideoFrame
+	Err         error
+}
+
 func EncodeFrame(frame *domain.VideoFrame) ([]byte, error) {
-	if err := validateFrameForTransport(frame); err != nil {
+	if err := validateFrameForWrite(frame); err != nil {
 		return nil, err
 	}
 
@@ -44,12 +48,9 @@ func DecodeFrame(data []byte) (*domain.VideoFrame, error) {
 	if len(data) < minEncodedFrameSize {
 		return nil, fmt.Errorf("%w: frame is truncated", ErrTransport)
 	}
-	if len(data) > maxEncodedFrameSize {
-		return nil, fmt.Errorf("%w: frame is too large", ErrTransport)
-	}
 
 	payloadSize := int(binary.BigEndian.Uint32(data[framePayloadLengthFrom : framePayloadLengthFrom+uint32Size]))
-	if payloadSize > MaxFramePayloadSize {
+	if payloadSize > domain.MaxFramePayloadSize {
 		return nil, fmt.Errorf("%w: frame payload is too large", ErrTransport)
 	}
 	if len(data) != frameHeaderSize+payloadSize+ed25519.SignatureSize {
@@ -73,15 +74,11 @@ func DecodeFrame(data []byte) (*domain.VideoFrame, error) {
 
 	copy(frame.Signature[:], data[offset:offset+ed25519.SignatureSize])
 
-	if err := validateFrameForTransport(frame); err != nil {
-		return nil, err
-	}
-
 	return frame, nil
 }
 
 func WriteFrame(stream *quic.Stream, frame *domain.VideoFrame) error {
-	if err := validateFrameForTransport(frame); err != nil {
+	if err := validateFrameForWrite(frame); err != nil {
 		return err
 	}
 	if stream == nil {
@@ -118,7 +115,7 @@ func ReadFrame(ctx context.Context, stream *quic.Stream) (*domain.VideoFrame, er
 	}
 
 	payloadSize := int(binary.BigEndian.Uint32(header[framePayloadLengthFrom : framePayloadLengthFrom+uint32Size]))
-	if payloadSize > MaxFramePayloadSize {
+	if payloadSize > domain.MaxFramePayloadSize {
 		return nil, fmt.Errorf("%w: frame payload is too large", ErrTransport)
 	}
 
@@ -142,31 +139,64 @@ func ReadFrame(ctx context.Context, stream *quic.Stream) (*domain.VideoFrame, er
 		return nil, fmt.Errorf("%w: read frame signature: %w", ErrTransport, err)
 	}
 
-	if err := validateFrameForTransport(frame); err != nil {
-		return nil, err
-	}
-
 	return frame, nil
 }
 
-func validateFrameForTransport(frame *domain.VideoFrame) error {
+func ReadFramesFromStreams(ctx context.Context, streams []*quic.Stream) <-chan FrameReadResult {
+	results := make(chan FrameReadResult, len(streams))
+
+	var wg sync.WaitGroup
+	wg.Add(len(streams))
+
+	for i, stream := range streams {
+		go func(streamIndex int, stream *quic.Stream) {
+			defer wg.Done()
+			for {
+				frame, err := ReadFrame(ctx, stream)
+				if err != nil {
+					sendFrameReadResult(ctx, results, FrameReadResult{
+						StreamIndex: streamIndex,
+						Err:         err,
+					})
+					return
+				}
+
+				if !sendFrameReadResult(ctx, results, FrameReadResult{
+					StreamIndex: streamIndex,
+					Frame:       frame,
+				}) {
+					return
+				}
+			}
+		}(i, stream)
+	}
+
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	return results
+}
+
+func validateFrameForWrite(frame *domain.VideoFrame) error {
 	if frame == nil {
 		return fmt.Errorf("%w: frame is nil", ErrTransport)
 	}
-	if frame.SessionID == [handshake.SessionIDSize]byte{} {
-		return fmt.Errorf("%w: frame session id is empty", ErrTransport)
-	}
-	if frame.Timestamp <= 0 {
-		return fmt.Errorf("%w: frame timestamp is invalid", ErrTransport)
-	}
-	if len(frame.Payload) == 0 {
-		return fmt.Errorf("%w: frame payload is empty", ErrTransport)
-	}
-	if len(frame.Payload) > MaxFramePayloadSize {
+	if len(frame.Payload) > domain.MaxFramePayloadSize {
 		return fmt.Errorf("%w: frame payload is too large", ErrTransport)
 	}
 
 	return nil
+}
+
+func sendFrameReadResult(ctx context.Context, results chan<- FrameReadResult, result FrameReadResult) bool {
+	select {
+	case results <- result:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 func encodedFrameSize(frame *domain.VideoFrame) int {

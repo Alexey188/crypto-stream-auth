@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"crypto-stream-auth/internal/handshake"
 
@@ -16,7 +17,8 @@ import (
 var ErrTransport = errors.New("transport")
 
 const (
-	ALPN = "crypto-stream-auth/1"
+	ALPN             = "crypto-stream-auth/1"
+	MediaStreamCount = 1
 
 	lengthFieldSize    = 2
 	timestampFieldSize = 8
@@ -59,6 +61,14 @@ func Dial(ctx context.Context, addr string, tlsConfig *tls.Config, quicConfig *q
 	return conn, nil
 }
 
+func NewQUICConfig(handshakeTimeout time.Duration, idleTimeout time.Duration, maxIncomingStreams int64) *quic.Config {
+	return &quic.Config{
+		HandshakeIdleTimeout: handshakeTimeout,
+		MaxIdleTimeout:       idleTimeout,
+		MaxIncomingStreams:   maxIncomingStreams,
+	}
+}
+
 func AcceptConnection(ctx context.Context, listener *quic.Listener) (*quic.Conn, error) {
 	if listener == nil {
 		return nil, fmt.Errorf("%w: listener is nil", ErrTransport)
@@ -70,6 +80,25 @@ func AcceptConnection(ctx context.Context, listener *quic.Listener) (*quic.Conn,
 	}
 
 	return conn, nil
+}
+
+func CloseSession(conn *quic.Conn, handlerErr *error, failedCode quic.ApplicationErrorCode, completedCode quic.ApplicationErrorCode) {
+	code := failedCode
+	reason := "handshake failed"
+	if handlerErr != nil && *handlerErr == nil {
+		code = completedCode
+		reason = "session complete"
+	}
+
+	closeErr := conn.CloseWithError(code, reason)
+	if handlerErr != nil && *handlerErr == nil && closeErr != nil {
+		*handlerErr = closeErr
+	}
+}
+
+func IsGracefulRemoteClose(err error) bool {
+	var appErr *quic.ApplicationError
+	return errors.As(err, &appErr) && appErr.Remote && appErr.ErrorCode == 0
 }
 
 func OpenStream(ctx context.Context, conn *quic.Conn) (*quic.Stream, error) {
@@ -93,24 +122,6 @@ func AcceptStream(ctx context.Context, conn *quic.Conn) (*quic.Stream, error) {
 	stream, err := conn.AcceptStream(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("%w: accept stream: %w", ErrTransport, err)
-	}
-
-	return stream, nil
-}
-
-func OpenHandshakeStream(ctx context.Context, conn *quic.Conn) (*quic.Stream, error) {
-	stream, err := OpenStream(ctx, conn)
-	if err != nil {
-		return nil, fmt.Errorf("%w: open handshake stream: %w", ErrTransport, err)
-	}
-
-	return stream, nil
-}
-
-func AcceptHandshakeStream(ctx context.Context, conn *quic.Conn) (*quic.Stream, error) {
-	stream, err := AcceptStream(ctx, conn)
-	if err != nil {
-		return nil, fmt.Errorf("%w: accept handshake stream: %w", ErrTransport, err)
 	}
 
 	return stream, nil

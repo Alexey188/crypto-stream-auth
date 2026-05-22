@@ -1,16 +1,10 @@
 package main
 
 import (
-	"crypto-stream-auth/internal/fileutil"
+	authcrypto "crypto-stream-auth/internal/crypto"
 	"crypto-stream-auth/internal/tpm"
-	"crypto/rsa"
-	"crypto/x509"
-	"encoding/pem"
 	"errors"
-	"fmt"
 	"log"
-	"os"
-	"path/filepath"
 )
 
 // TODO: если KeyHandle у tpm уже занят, нужно выбрать свободный идентификатор
@@ -42,31 +36,9 @@ func main() {
 		log.Fatalf("%v: read tpm camera public key: %v ", ErrGeneratePublicKey, err)
 	}
 
-	if err := saveCameraPublicKey(publicKey, cameraPublicKeyPem); err != nil {
+	if err := authcrypto.SaveRSAPublicKey(publicKey, cameraPublicKeyPem); err != nil {
 		log.Fatalf("%v: save camera public key: %v", ErrGeneratePublicKey, err)
 	}
 
 	log.Printf("camera public key exported successfully: %s", cameraPublicKeyPem)
-}
-
-func saveCameraPublicKey(publicKey *rsa.PublicKey, path string) error {
-	if publicKey == nil {
-		return fmt.Errorf("camera public key is nil")
-	}
-
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return fmt.Errorf("%w: %w", ErrGeneratePublicKey, err)
-	}
-
-	data, err := x509.MarshalPKIXPublicKey(publicKey)
-	if err != nil {
-		return fmt.Errorf("%w: %w", ErrGeneratePublicKey, err)
-
-	}
-
-	return fileutil.WriteFileOnce(
-		path,
-		pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: data}),
-		0644,
-	)
 }

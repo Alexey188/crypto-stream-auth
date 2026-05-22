@@ -60,6 +60,18 @@ func (validator *FrameValidator) ValidateFrame(frame *domain.VideoFrame) error {
 		return fmt.Errorf("%w: session id mismatch", ErrValidateFrame)
 	}
 
+	if len(frame.Payload) == 0 {
+		return fmt.Errorf("%w: frame payload is empty", ErrValidateFrame)
+	}
+
+	if len(frame.Payload) > domain.MaxFramePayloadSize {
+		return fmt.Errorf("%w: frame payload is too large", ErrValidateFrame)
+	}
+
+	if frame.Sequence == 0 {
+		return fmt.Errorf("%w: frame sequence is empty", ErrValidateFrame)
+	}
+
 	if validator.hasLastSequence && frame.Sequence <= validator.lastSequence {
 		return fmt.Errorf("%w: replay or old frame", ErrValidateFrame)
 	}

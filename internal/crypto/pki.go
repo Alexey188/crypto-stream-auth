@@ -1,7 +1,6 @@
 package crypto
 
 import (
-	"crypto-stream-auth/internal/fileutil"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -11,6 +10,7 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -20,6 +20,8 @@ var (
 	ErrIssueCameraCertificate = errors.New("issue camera certificate")
 	ErrSaveRootCA             = errors.New("save root ca")
 	ErrSaveCertificate        = errors.New("save certificate")
+	ErrSavePublicKey          = errors.New("save public key")
+	ErrInvalidCertificate     = errors.New("invalid certificate")
 )
 
 const (
@@ -168,11 +170,11 @@ func SaveRootCA(rootCA *RootCA, certPath, keyPath string) error {
 		return fmt.Errorf("%w: encode private key", ErrSaveRootCA)
 	}
 
-	if err := fileutil.WriteFileOnce(certPath, certPEM, 0644); err != nil {
+	if err := writeFileOnce(certPath, certPEM, 0644); err != nil {
 		return fmt.Errorf("%w: write root ca certificate: %w", ErrSaveRootCA, err)
 	}
 
-	if err := fileutil.WriteFileOnce(keyPath, keyPEM, 0600); err != nil {
+	if err := writeFileOnce(keyPath, keyPEM, 0600); err != nil {
 		return fmt.Errorf("%w: write root ca private key: %w", ErrSaveRootCA, err)
 	}
 
@@ -242,6 +244,51 @@ func IssueCameraCertificate(rootCA *RootCA, cameraID string, cameraPublicKey *rs
 	return cert, nil
 }
 
+func VerifyCameraCertificate(cameraCertificate *x509.Certificate, rootCA *x509.Certificate) (*rsa.PublicKey, error) {
+	if cameraCertificate == nil {
+		return nil, fmt.Errorf("%w: camera certificate is nil", ErrInvalidCertificate)
+	}
+
+	if rootCA == nil {
+		return nil, fmt.Errorf("%w: root ca is nil", ErrInvalidCertificate)
+	}
+
+	roots := x509.NewCertPool()
+	roots.AddCert(rootCA)
+
+	if _, err := cameraCertificate.Verify(x509.VerifyOptions{Roots: roots}); err != nil {
+		return nil, fmt.Errorf("%w: verify chain: %w", ErrInvalidCertificate, err)
+	}
+
+	cameraPublicKey, ok := cameraCertificate.PublicKey.(*rsa.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("%w: camera public key is not RSA", ErrInvalidCertificate)
+	}
+
+	if err := validateCameraPublicKey(cameraPublicKey); err != nil {
+		return nil, fmt.Errorf("%w: invalid camera public key: %w", ErrInvalidCertificate, err)
+	}
+
+	if cameraCertificate.IsCA {
+		return nil, fmt.Errorf("%w: camera certificate must not be CA", ErrInvalidCertificate)
+	}
+
+	if cameraCertificate.KeyUsage&x509.KeyUsageDigitalSignature == 0 {
+		return nil, fmt.Errorf("%w: missing digital signature key usage", ErrInvalidCertificate)
+	}
+
+	if cameraCertificate.SignatureAlgorithm != x509.SHA384WithRSAPSS {
+		return nil, fmt.Errorf(
+			"%w: camera certificate signature algorithm is %s, want %s",
+			ErrInvalidCertificate,
+			cameraCertificate.SignatureAlgorithm,
+			x509.SHA384WithRSAPSS,
+		)
+	}
+
+	return cameraPublicKey, nil
+}
+
 func validateRootCAPrivateKey(key *rsa.PrivateKey) error {
 	if key == nil {
 		return fmt.Errorf("private key is nil")
@@ -304,18 +351,58 @@ func LoadRSAPublicKey(path string) (*rsa.PublicKey, error) {
 	}
 }
 
+func SaveRSAPublicKey(publicKey *rsa.PublicKey, path string) error {
+	if err := validateCameraPublicKey(publicKey); err != nil {
+		return fmt.Errorf("%w: invalid rsa public key: %w", ErrSavePublicKey, err)
+	}
+
+	data, err := x509.MarshalPKIXPublicKey(publicKey)
+	if err != nil {
+		return fmt.Errorf("%w: marshal rsa public key: %w", ErrSavePublicKey, err)
+	}
+
+	publicKeyPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: data})
+	if publicKeyPEM == nil {
+		return fmt.Errorf("%w: encode rsa public key", ErrSavePublicKey)
+	}
+
+	if err := writeFileOnce(path, publicKeyPEM, 0644); err != nil {
+		return fmt.Errorf("%w: write rsa public key: %w", ErrSavePublicKey, err)
+	}
+
+	return nil
+}
+
 // сохранение сертификата камеры
 func SaveCertificate(cert *x509.Certificate, path string) error {
 	if cert == nil {
 		return fmt.Errorf("%w: certificate is nil", ErrSaveCertificate)
 	}
 
-	if err := fileutil.WriteFileOnce(
+	if err := writeFileOnce(
 		path,
 		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw}),
 		0644,
 	); err != nil {
 		return fmt.Errorf("%w: write certificate: %w", ErrSaveCertificate, err)
+	}
+
+	return nil
+}
+
+func writeFileOnce(path string, data []byte, perm os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return fmt.Errorf("create parent directory: %w", err)
+	}
+
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
+		return fmt.Errorf("create file once: %w", err)
+	}
+	defer file.Close()
+
+	if _, err := file.Write(data); err != nil {
+		return fmt.Errorf("write file: %w", err)
 	}
 
 	return nil

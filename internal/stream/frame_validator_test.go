@@ -75,6 +75,20 @@ func TestFrameValidationAnomalies(t *testing.T) {
 			t.Fatalf("ValidateFrame() error = %v, want %v", err, ErrInvalidFrameSignature)
 		}
 	})
+
+	t.Run("rejects_empty_payload", func(t *testing.T) {
+		publicKey, privateKey := newEd25519Keys(t)
+		sessionID := testStreamSessionID()
+		validator := newFrameValidator(t, sessionID, publicKey)
+
+		frame := signedFrame(t, privateKey, sessionID, 1, time.Now())
+		frame.Payload = nil
+
+		err := validator.ValidateFrame(frame)
+		if !errors.Is(err, ErrValidateFrame) {
+			t.Fatalf("ValidateFrame() error = %v, want %v", err, ErrValidateFrame)
+		}
+	})
 }
 
 func newEd25519Keys(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {

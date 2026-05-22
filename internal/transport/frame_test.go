@@ -39,16 +39,6 @@ func TestFrameTransportRoundTrip(t *testing.T) {
 }
 
 func TestFrameTransportAnomalies(t *testing.T) {
-	t.Run("rejects_empty_payload", func(t *testing.T) {
-		frame := testFrame()
-		frame.Payload = nil
-
-		_, err := EncodeFrame(frame)
-		if !errors.Is(err, ErrTransport) {
-			t.Fatalf("EncodeFrame() error = %v, want %v", err, ErrTransport)
-		}
-	})
-
 	t.Run("rejects_trailing_bytes", func(t *testing.T) {
 		data, err := EncodeFrame(testFrame())
 		if err != nil {

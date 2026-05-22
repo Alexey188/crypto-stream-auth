@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 )
 
+const MaxFramePayloadSize = 256 * 1024
+
 type VideoFrame struct {
 	SessionID [16]byte
 	Sequence  uint64 // Это счетчик кадров
