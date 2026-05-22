@@ -19,7 +19,7 @@ import (
 type Options struct {
 	ServerAddr         string
 	RootCAPath         string
-	RecordPath         string
+	FFplayPath         string
 	HandshakeTimeout   time.Duration
 	MaxHandshakeAge    time.Duration
 	MaxFrameAge        time.Duration
@@ -109,17 +109,17 @@ func (c *Consumer) runSession(parentCtx context.Context) error {
 
 	log.Printf("handshake ok: session_id=%s", hex.EncodeToString(session.SessionID[:]))
 
-	sink, err := media.NewH264FileSink(c.options.RecordPath)
+	sink, err := media.NewFFplaySink(sessionCtx, c.options.FFplayPath)
 	if err != nil {
-		return fmt.Errorf("create h264 recording: %w", err)
+		return fmt.Errorf("create live video sink: %w", err)
 	}
 	defer func() {
 		if err := sink.Close(); err != nil {
-			log.Printf("close h264 recording: %v", err)
+			log.Printf("close live video sink: %v", err)
 		}
 	}()
 
-	log.Printf("recording h264 stream: %s", c.options.RecordPath)
+	log.Printf("playing live h264 stream")
 
 	if err := streamauth.ReceiveAndValidateFrames(sessionCtx, conn, session, streamauth.ReceiveOptions{
 		MaxFrameAge:       c.options.MaxFrameAge,

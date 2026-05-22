@@ -10,7 +10,7 @@ import (
 const (
 	serverAddr = "127.0.0.1:4343"
 	rootCAPath = "artifacts/certs/root_ca.crt"
-	recordPath = "artifacts/video/consumer.h264"
+	ffplayPath = "ffplay"
 
 	handshakeTimeout   = 5 * time.Second
 	maxHandshakeAge    = 10 * time.Second
@@ -23,7 +23,7 @@ func main() {
 	client, err := consumer.New(consumer.Options{
 		ServerAddr:         serverAddr,
 		RootCAPath:         rootCAPath,
-		RecordPath:         recordPath,
+		FFplayPath:         ffplayPath,
 		HandshakeTimeout:   handshakeTimeout,
 		MaxHandshakeAge:    maxHandshakeAge,
 		MaxFrameAge:        maxFrameAge,

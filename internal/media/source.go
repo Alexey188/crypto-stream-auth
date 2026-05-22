@@ -6,9 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"sync"
 )
@@ -20,8 +18,12 @@ type Source interface {
 	Close() error
 }
 
-type H264FileSink struct {
-	file *os.File
+type FFplaySink struct {
+	cmd   *exec.Cmd
+	stdin io.WriteCloser
+
+	closeOnce sync.Once
+	closeErr  error
 }
 
 type FFmpegH264SourceConfig struct {
@@ -29,14 +31,13 @@ type FFmpegH264SourceConfig struct {
 	Width          int
 	Height         int
 	FPS            int
-	MaxNALUSize    int
 	MaxPayloadSize int
 }
 
 type FFmpegH264Source struct {
 	cmd    *exec.Cmd
 	stdout io.ReadCloser
-	reader *H264PayloadReader
+	reader *PayloadReader
 
 	closeOnce sync.Once
 	closeErr  error
@@ -63,7 +64,7 @@ func NewFFmpegH264Source(ctx context.Context, cfg FFmpegH264SourceConfig) (*FFmp
 	return &FFmpegH264Source{
 		cmd:    cmd,
 		stdout: stdout,
-		reader: NewH264PayloadReader(stdout, cfg.MaxNALUSize, cfg.MaxPayloadSize),
+		reader: NewPayloadReader(stdout, cfg.MaxPayloadSize),
 	}, nil
 }
 
@@ -114,43 +115,63 @@ func (s *FFmpegH264Source) Close() error {
 	return nil
 }
 
-func NewH264FileSink(path string) (*H264FileSink, error) {
-	if path == "" {
-		return nil, fmt.Errorf("%w: output path is empty", ErrMedia)
+func NewFFplaySink(ctx context.Context, ffplayPath string) (*FFplaySink, error) {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return nil, fmt.Errorf("%w: create output directory: %w", ErrMedia, err)
+	if ffplayPath == "" {
+		ffplayPath = "ffplay"
 	}
 
-	file, err := os.Create(path)
+	cmd := exec.CommandContext(ctx, ffplayPath, ffplayArgs()...)
+	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return nil, fmt.Errorf("%w: create h264 output: %w", ErrMedia, err)
+		return nil, fmt.Errorf("%w: open ffplay stdin: %w", ErrMedia, err)
+	}
+	cmd.Stderr = io.Discard
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("%w: start ffplay: %w", ErrMedia, err)
 	}
 
-	return &H264FileSink{file: file}, nil
+	return &FFplaySink{
+		cmd:   cmd,
+		stdin: stdin,
+	}, nil
 }
 
-func (s *H264FileSink) WritePayload(payload []byte) error {
-	if s == nil || s.file == nil {
-		return fmt.Errorf("%w: h264 sink is nil", ErrMedia)
+func (s *FFplaySink) WritePayload(payload []byte) error {
+	if s == nil || s.stdin == nil {
+		return fmt.Errorf("%w: ffplay sink is nil", ErrMedia)
 	}
 	if len(payload) == 0 {
 		return fmt.Errorf("%w: h264 payload is empty", ErrMedia)
 	}
-	if _, err := s.file.Write(payload); err != nil {
-		return fmt.Errorf("%w: write h264 payload: %w", ErrMedia, err)
+	if _, err := s.stdin.Write(payload); err != nil {
+		return fmt.Errorf("%w: write ffplay payload: %w", ErrMedia, err)
 	}
 	return nil
 }
 
-func (s *H264FileSink) Close() error {
-	if s == nil || s.file == nil {
+func (s *FFplaySink) Close() error {
+	if s == nil {
 		return nil
 	}
-	if err := s.file.Close(); err != nil {
-		return fmt.Errorf("%w: close h264 output: %w", ErrMedia, err)
+
+	s.closeOnce.Do(func() {
+		if s.stdin != nil {
+			s.closeErr = s.stdin.Close()
+			s.stdin = nil
+		}
+		if s.cmd != nil && s.cmd.Process != nil {
+			_ = s.cmd.Process.Kill()
+			_ = s.cmd.Wait()
+		}
+	})
+
+	if s.closeErr != nil {
+		return fmt.Errorf("%w: close ffplay sink: %w", ErrMedia, s.closeErr)
 	}
-	s.file = nil
 	return nil
 }
 
@@ -171,9 +192,6 @@ func normalizeFFmpegConfig(cfg FFmpegH264SourceConfig) FFmpegH264SourceConfig {
 	}
 	if cfg.FPS <= 0 {
 		cfg.FPS = 30
-	}
-	if cfg.MaxNALUSize <= 0 {
-		cfg.MaxNALUSize = DefaultMaxNALUSize
 	}
 	if cfg.MaxPayloadSize <= 0 {
 		cfg.MaxPayloadSize = domain.MaxFramePayloadSize
@@ -199,5 +217,19 @@ func ffmpegArgs(cfg FFmpegH264SourceConfig) []string {
 		"-x264-params", "keyint=" + rate + ":scenecut=0",
 		"-f", "h264",
 		"pipe:1",
+	}
+}
+
+func ffplayArgs() []string {
+	return []string{
+		"-hide_banner",
+		"-loglevel", "error",
+		"-fflags", "nobuffer",
+		"-flags", "low_delay",
+		"-framedrop",
+		"-analyzeduration", "0",
+		"-probesize", "32",
+		"-f", "h264",
+		"-i", "pipe:0",
 	}
 }
