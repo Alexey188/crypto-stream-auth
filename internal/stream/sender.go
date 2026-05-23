@@ -69,6 +69,10 @@ func SendSignedFrames(ctx context.Context, conn *quic.Conn, session *handshake.P
 		streamIndex := int((sequence - 1) % uint64(len(frameStreams)))
 
 		if err := transport.WriteFrame(frameStreams[streamIndex], frame); err != nil {
+			if transport.IsGracefulRemoteClose(err) {
+				log.Printf("media stream finished")
+				return nil
+			}
 			_ = frameStreams[streamIndex].Close()
 			return fmt.Errorf("write frame %d to media stream %d: %w", sequence, streamIndex, err)
 		}

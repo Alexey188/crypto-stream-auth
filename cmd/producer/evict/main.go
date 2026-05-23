@@ -21,5 +21,4 @@ func main() {
 
 	log.Printf("TPM camera key evicted: 0x%x", tpm.DefaultCameraKeyHandle)
 	log.Printf("old camera certificate is no longer valid")
-
 }

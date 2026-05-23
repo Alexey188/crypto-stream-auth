@@ -5,9 +5,10 @@ import (
 	authcrypto "crypto-stream-auth/internal/crypto"
 	"crypto-stream-auth/internal/handshake"
 	"crypto-stream-auth/internal/transport"
-	"crypto/x509"
+	"encoding/hex"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	quic "github.com/quic-go/quic-go"
@@ -21,27 +22,41 @@ const (
 type Options struct {
 	ListenAddr       string
 	ProducerAddr     string
-	RootCAPath       string
+	TrustDir         string
 	HandshakeTimeout time.Duration
 	IdleTimeout      time.Duration
 }
 
 type Server struct {
-	options  Options
-	rootCA   *x509.Certificate
-	listener *quic.Listener
+	options    Options
+	trustStore *authcrypto.TrustStore
+	listener   *quic.Listener
+	hubMu      sync.Mutex
+	hub        *FrameHub
 }
 
 func New(options Options) (*Server, error) {
-	rootCA, err := authcrypto.LoadCertificate(options.RootCAPath)
+	options = withDefaults(options)
+
+	trustStore, err := authcrypto.LoadTrustStore(options.TrustDir)
 	if err != nil {
-		return nil, fmt.Errorf("load root ca certificate: %w", err)
+		return nil, fmt.Errorf("load trust store: %w", err)
 	}
 
 	return &Server{
-		options: options,
-		rootCA:  rootCA,
+		options:    options,
+		trustStore: trustStore,
 	}, nil
+}
+
+func withDefaults(options Options) Options {
+	if options.HandshakeTimeout <= 0 {
+		options.HandshakeTimeout = 5 * time.Second
+	}
+	if options.IdleTimeout <= 0 {
+		options.IdleTimeout = 30 * time.Second
+	}
+	return options
 }
 
 func (s *Server) Run(ctx context.Context) error {
@@ -54,7 +69,7 @@ func (s *Server) Run(ctx context.Context) error {
 		return fmt.Errorf("create quic tls config: %w", err)
 	}
 
-	quicConfig := transport.NewQUICConfig(s.options.HandshakeTimeout, s.options.IdleTimeout, transport.MediaStreamCount+1)
+	quicConfig := transport.NewQUICConfig(s.options.HandshakeTimeout, s.options.IdleTimeout)
 	listener, err := transport.Listen(s.options.ListenAddr, tlsConfig, quicConfig)
 	if err != nil {
 		return fmt.Errorf("listen quic: %w", err)
@@ -106,34 +121,88 @@ func (s *Server) handleConsumerConnection(parentCtx context.Context, consumerCon
 	if err != nil {
 		return err
 	}
+	log.Printf("handshake request from consumer:\n  protocol_version=%d\n  consumer_nonce=%s",
+		request.ProtocolVersion,
+		hex.EncodeToString(request.ConsumerNonce[:]),
+	)
 
-	producerConn, err := s.forwardHandshake(handshakeCtx, consumerStream, request)
+	response, mediaHub, err := s.prepareMediaHub(parentCtx, handshakeCtx, request)
 	if err != nil {
 		return err
 	}
-	defer transport.CloseSession(producerConn, &err, handshakeFailedCode, handshakeCompletedCode)
 
-	log.Printf("handshake routed")
-
-	return ForwardFrames(sessionCtx, producerConn, consumerConn)
-}
-
-func (s *Server) forwardHandshake(ctx context.Context, consumerStream *quic.Stream, request *handshake.Request) (*quic.Conn, error) {
-	quicConfig := transport.NewQUICConfig(s.options.HandshakeTimeout, s.options.IdleTimeout, transport.MediaStreamCount+1)
-	response, producerConn, err := RequestProducerHandshake(ctx, s.options.ProducerAddr, request, quicConfig, handshakeFailedCode)
+	subscription, err := mediaHub.AddConsumer(sessionCtx, consumerConn)
 	if err != nil {
-		return nil, err
+		return err
 	}
-
-	if err := VerifyCameraCertificate(response, s.rootCA); err != nil {
-		_ = producerConn.CloseWithError(handshakeFailedCode, "handshake failed")
-		return nil, err
-	}
+	defer mediaHub.RemoveConsumer(subscription)
 
 	if err := transport.WriteHandshakeResponse(consumerStream, response); err != nil {
-		_ = producerConn.CloseWithError(handshakeFailedCode, "handshake failed")
-		return nil, err
+		return err
 	}
 
-	return producerConn, nil
+	mediaHub.Start(s.clearMediaHub)
+
+	log.Printf("handshake routed:\n  session_id=%s", hex.EncodeToString(response.SessionID[:]))
+
+	return subscription.Wait(sessionCtx)
+}
+
+func (s *Server) prepareMediaHub(parentCtx context.Context, handshakeCtx context.Context, request *handshake.Request) (*handshake.Response, *FrameHub, error) {
+	s.hubMu.Lock()
+	defer s.hubMu.Unlock()
+
+	if s.hub != nil {
+		response, producerConn, err := s.requestProducerHandshake(handshakeCtx, request)
+		if err != nil {
+			return nil, nil, err
+		}
+		_ = producerConn.CloseWithError(handshakeCompletedCode, "handshake complete")
+
+		if response.SessionID != s.hub.SessionID() {
+			return nil, nil, fmt.Errorf("producer returned another session id for active media session")
+		}
+
+		return response, s.hub, nil
+	}
+
+	response, producerConn, err := s.requestProducerHandshake(handshakeCtx, request)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	s.hub = NewFrameHub(parentCtx, producerConn, response.SessionID)
+	return response, s.hub, nil
+}
+
+func (s *Server) requestProducerHandshake(ctx context.Context, request *handshake.Request) (*handshake.Response, *quic.Conn, error) {
+	quicConfig := transport.NewQUICConfig(s.options.HandshakeTimeout, s.options.IdleTimeout)
+	response, producerConn, err := RequestProducerHandshake(ctx, s.options.ProducerAddr, request, quicConfig, handshakeFailedCode)
+	if err != nil {
+		return nil, nil, err
+	}
+	log.Printf("handshake response from producer:\n  session_id=%s\n  certificate_sha256=%s\n  ephemeral_public_key=%s\n  timestamp=%d\n  signature_bytes=%d",
+		hex.EncodeToString(response.SessionID[:]),
+		authcrypto.SHA256Hex(response.CameraCertificateDER),
+		hex.EncodeToString(response.EphemeralPublicKey),
+		response.Timestamp,
+		len(response.Signature),
+	)
+
+	if err := VerifyCameraCertificate(response, s.trustStore); err != nil {
+		_ = producerConn.CloseWithError(handshakeFailedCode, "handshake failed")
+		return nil, nil, err
+	}
+	log.Printf("camera certificate verified by server:\n  certificate_sha256=%s", authcrypto.SHA256Hex(response.CameraCertificateDER))
+
+	return response, producerConn, nil
+}
+
+func (s *Server) clearMediaHub(hub *FrameHub) {
+	s.hubMu.Lock()
+	defer s.hubMu.Unlock()
+
+	if s.hub == hub {
+		s.hub = nil
+	}
 }

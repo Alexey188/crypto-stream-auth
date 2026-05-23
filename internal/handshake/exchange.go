@@ -1,6 +1,7 @@
 package handshake
 
 import (
+	authcrypto "crypto-stream-auth/internal/crypto"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
@@ -11,6 +12,7 @@ import (
 
 type ProducerSession struct {
 	SessionID           [SessionIDSize]byte
+	EphemeralPublicKey  ed25519.PublicKey
 	EphemeralPrivateKey ed25519.PrivateKey
 	HandshakeTime       time.Time
 }
@@ -60,6 +62,7 @@ func BuildResponse(request *Request, cameraCertificate *x509.Certificate, signer
 
 	session := &ProducerSession{
 		SessionID:           sessionID,
+		EphemeralPublicKey:  append(ed25519.PublicKey(nil), payload.EphemeralPublicKey...),
 		EphemeralPrivateKey: append(ed25519.PrivateKey(nil), ephemeralPrivateKey...),
 		HandshakeTime:       now,
 	}
@@ -67,7 +70,50 @@ func BuildResponse(request *Request, cameraCertificate *x509.Certificate, signer
 	return response, session, nil
 }
 
+func BuildResponseForSession(request *Request, cameraCertificate *x509.Certificate, signer RSAPSSSigner, session *ProducerSession) (*Response, error) {
+	if err := validateRequest(request); err != nil {
+		return nil, err
+	}
+	if session == nil {
+		return nil, fmt.Errorf("%w: producer session is nil", ErrInvalidHandshake)
+	}
+	if session.SessionID == [SessionIDSize]byte{} {
+		return nil, fmt.Errorf("%w: session id is empty", ErrInvalidHandshake)
+	}
+	if len(session.EphemeralPublicKey) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("%w: ephemeral public key size is invalid", ErrInvalidHandshake)
+	}
+
+	now := time.Now()
+	payload, err := SignHandshake(
+		cameraCertificate,
+		signer,
+		session.SessionID,
+		request.ConsumerNonce,
+		now.Unix(),
+		session.EphemeralPublicKey,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("%w: sign existing session handshake: %w", ErrInvalidHandshake, err)
+	}
+
+	response := responseFromPayload(payload)
+	if err := validateResponse(response); err != nil {
+		return nil, err
+	}
+
+	return response, nil
+}
+
 func VerifyResponse(response *Response, rootCA *x509.Certificate, request *Request, maxAge time.Duration) (*ConsumerSession, error) {
+	return verifyResponse(response, rootCAVerifier{rootCA: rootCA}, request, maxAge)
+}
+
+func VerifyResponseWithTrustStore(response *Response, trustStore *authcrypto.TrustStore, request *Request, maxAge time.Duration) (*ConsumerSession, error) {
+	return verifyResponse(response, trustStore, request, maxAge)
+}
+
+func verifyResponse(response *Response, verifier CameraCertificateVerifier, request *Request, maxAge time.Duration) (*ConsumerSession, error) {
 	if err := validateRequest(request); err != nil {
 		return nil, err
 	}
@@ -81,7 +127,7 @@ func VerifyResponse(response *Response, rootCA *x509.Certificate, request *Reque
 	}
 
 	payload := payloadFromResponse(response, cameraCertificate)
-	if err := VerifyHandshake(payload, rootCA, request.ConsumerNonce, maxAge); err != nil {
+	if err := verifyHandshake(payload, verifier, request.ConsumerNonce, maxAge); err != nil {
 		return nil, fmt.Errorf("%w: verify handshake: %w", ErrInvalidHandshake, err)
 	}
 

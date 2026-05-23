@@ -51,6 +51,40 @@ func TestHandshakeExchangeRoundTrip(t *testing.T) {
 }
 
 func TestHandshakeExchangeAnomalies(t *testing.T) {
+	t.Run("rejects_foreign_camera_certificate", func(t *testing.T) {
+		trustedRoot, _, trustedCameraCertificate := newTestCameraIdentity(t)
+		trustedManifest, err := authcrypto.NewCameraManifest(trustedRoot.Certificate, trustedCameraCertificate)
+		if err != nil {
+			t.Fatalf("NewCameraManifest() error = %v", err)
+		}
+
+		trustStore, err := authcrypto.NewTrustStore([]*x509.Certificate{trustedRoot.Certificate}, trustedManifest)
+		if err != nil {
+			t.Fatalf("NewTrustStore() error = %v", err)
+		}
+
+		_, foreignCameraPrivateKey, foreignCameraCertificate := newTestCameraIdentity(t)
+		request, response := newSignedResponse(t, foreignCameraCertificate, foreignCameraPrivateKey)
+
+		_, err = VerifyResponseWithTrustStore(response, trustStore, request, time.Minute)
+		if !errors.Is(err, ErrInvalidHandshake) {
+			t.Fatalf("VerifyResponseWithTrustStore() error = %v, want %v", err, ErrInvalidHandshake)
+		}
+	})
+
+	t.Run("rejects_replayed_handshake_response", func(t *testing.T) {
+		rootCA, cameraPrivateKey, cameraCertificate := newTestCameraIdentity(t)
+		request, response := newSignedResponse(t, cameraCertificate, cameraPrivateKey)
+
+		replayedRequest := *request
+		replayedRequest.ConsumerNonce[0] ^= 1
+
+		_, err := VerifyResponse(response, rootCA.Certificate, &replayedRequest, time.Minute)
+		if !errors.Is(err, ErrInvalidHandshake) {
+			t.Fatalf("VerifyResponse() error = %v, want %v", err, ErrInvalidHandshake)
+		}
+	})
+
 	t.Run("rejects_nonce_mismatch", func(t *testing.T) {
 		rootCA, cameraPrivateKey, cameraCertificate := newTestCameraIdentity(t)
 		request, response := newSignedResponse(t, cameraCertificate, cameraPrivateKey)

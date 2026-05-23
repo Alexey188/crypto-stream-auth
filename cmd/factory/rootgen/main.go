@@ -8,12 +8,11 @@ import (
 
 const (
 	orgName      = "TrustCam"
-	rootCertPath = "artifacts/certs/root_ca.crt"
-	rootKeyPath  = "artifacts/keys/root_ca.key"
+	rootCertPath = "artifacts/trust/roots/root_ca2.crt"
+	rootKeyPath  = "artifacts/keys/root_ca2.key"
 )
 
 func main() {
-
 	rootCA, err := authcrypto.GenerateRootCA(orgName)
 	if err != nil {
 		log.Fatal(err)

@@ -13,10 +13,25 @@ import (
 
 var ErrTPMSigner = errors.New("tpm signer")
 
+const (
+	MinPersistentHandle uint32 = 0x81000000
+	MaxPersistentHandle uint32 = 0x81FFFFFF
+
+	DefaultCameraKeyHandle uint32 = 0x81000005
+)
+
 type Signer struct {
 	tpm    transport.TPMCloser
 	handle tpm2.NamedHandle
 	auth   []byte
+}
+
+func ValidatePersistentHandle(handle uint32) error {
+	if handle < MinPersistentHandle || handle > MaxPersistentHandle {
+		return fmt.Errorf("%w: persistent handle 0x%x is outside 0x%x-0x%x", ErrTPMSigner, handle, MinPersistentHandle, MaxPersistentHandle)
+	}
+
+	return nil
 }
 
 func OpenSigner(persistentHandle uint32, auth []byte) (*Signer, error) {

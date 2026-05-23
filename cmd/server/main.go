@@ -4,24 +4,19 @@ import (
 	"context"
 	"crypto-stream-auth/internal/app/server"
 	"log"
-	"time"
 )
 
 const (
-	listenAddr       = "127.0.0.1:4343"
-	producerAddr     = "127.0.0.1:4242"
-	rootCAPath       = "artifacts/certs/root_ca.crt"
-	handshakeTimeout = 5 * time.Second
-	idleTimeout      = 30 * time.Second
+	listenAddr   = "127.0.0.1:4343"
+	producerAddr = "127.0.0.1:4242"
+	trustDir     = "artifacts/trust"
 )
 
 func main() {
 	srv, err := server.New(server.Options{
-		ListenAddr:       listenAddr,
-		ProducerAddr:     producerAddr,
-		RootCAPath:       rootCAPath,
-		HandshakeTimeout: handshakeTimeout,
-		IdleTimeout:      idleTimeout,
+		ListenAddr:   listenAddr,
+		ProducerAddr: producerAddr,
+		TrustDir:     trustDir,
 	})
 	if err != nil {
 		log.Fatal(err)

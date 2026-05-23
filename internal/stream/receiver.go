@@ -54,7 +54,7 @@ func ReceiveAndValidateFrames(ctx context.Context, conn *quic.Conn, session *han
 		}
 		frameStreams[i] = frameStream
 	}
-	defer closeFrameStreams(frameStreams)
+	defer transport.CloseStreams(frameStreams)
 
 	statsWindowStarted := time.Now()
 	var statsAccepted uint64
@@ -109,8 +109,8 @@ func ReceiveAndValidateFrames(ctx context.Context, conn *quic.Conn, session *han
 			statsPayloadBytes = 0
 		}
 
-		if err := handlePolicyAction(action); err != nil {
-			return err
+		if action == FramePolicyActionRehandshake {
+			return ErrRehandshakeRequired
 		}
 	}
 
@@ -143,21 +143,4 @@ func handleReceivedFrame(result transport.FrameReadResult, validator *FrameValid
 	}
 
 	return action, false, false, payloadBytes, nil
-}
-
-func handlePolicyAction(action FramePolicyAction) error {
-	switch action {
-	case FramePolicyActionRehandshake:
-		return ErrRehandshakeRequired
-	default:
-		return nil
-	}
-}
-
-func closeFrameStreams(streams []*quic.Stream) {
-	for _, stream := range streams {
-		if stream != nil {
-			_ = stream.Close()
-		}
-	}
 }

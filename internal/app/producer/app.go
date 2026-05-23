@@ -38,10 +38,14 @@ type Producer struct {
 	cameraCertificate *x509.Certificate
 	signer            *tpm.Signer
 	signerMu          sync.Mutex
+	sessionMu         sync.Mutex
+	activeSession     *handshake.ProducerSession
 	listener          *quic.Listener
 }
 
 func New(options Options) (*Producer, error) {
+	options = withDefaults(options)
+
 	cameraCertificate, err := authcrypto.LoadCertificate(options.CameraCertPath)
 	if err != nil {
 		return nil, fmt.Errorf("load camera certificate: %w", err)
@@ -59,6 +63,19 @@ func New(options Options) (*Producer, error) {
 	}, nil
 }
 
+func withDefaults(options Options) Options {
+	if options.CameraKeyHandle == 0 {
+		options.CameraKeyHandle = tpm.DefaultCameraKeyHandle
+	}
+	if options.HandshakeTimeout <= 0 {
+		options.HandshakeTimeout = 5 * time.Second
+	}
+	if options.IdleTimeout <= 0 {
+		options.IdleTimeout = 30 * time.Second
+	}
+	return options
+}
+
 func (p *Producer) Run(ctx context.Context) error {
 	if p == nil {
 		return fmt.Errorf("producer is nil")
@@ -69,7 +86,7 @@ func (p *Producer) Run(ctx context.Context) error {
 		return fmt.Errorf("create quic tls config: %w", err)
 	}
 
-	quicConfig := transport.NewQUICConfig(p.options.HandshakeTimeout, p.options.IdleTimeout, transport.MediaStreamCount+1)
+	quicConfig := transport.NewQUICConfig(p.options.HandshakeTimeout, p.options.IdleTimeout)
 	listener, err := transport.Listen(p.options.ListenAddr, tlsConfig, quicConfig)
 	if err != nil {
 		return fmt.Errorf("listen quic: %w", err)
@@ -136,17 +153,35 @@ func (p *Producer) handleConnection(parentCtx context.Context, conn *quic.Conn) 
 	if err != nil {
 		return err
 	}
+	log.Printf("handshake request received:\n  protocol_version=%d\n  consumer_nonce=%s",
+		request.ProtocolVersion,
+		hex.EncodeToString(request.ConsumerNonce[:]),
+	)
 
-	response, session, err := handshake.BuildResponse(request, p.cameraCertificate, p)
+	response, session, startsMedia, err := p.buildHandshakeResponse(request)
 	if err != nil {
 		return err
 	}
+	log.Printf("handshake response built:\n  session_id=%s\n  certificate_subject=%q\n  certificate_sha256=%s\n  ephemeral_public_key=%s\n  timestamp=%d\n  signature_bytes=%d",
+		hex.EncodeToString(response.SessionID[:]),
+		p.cameraCertificate.Subject.CommonName,
+		authcrypto.SHA256Hex(response.CameraCertificateDER),
+		hex.EncodeToString(response.EphemeralPublicKey),
+		response.Timestamp,
+		len(response.Signature),
+	)
 
 	if err := transport.WriteHandshakeResponse(stream, response); err != nil {
 		return err
 	}
 
-	log.Printf("handshake ok: session_id=%s", hex.EncodeToString(session.SessionID[:]))
+	if !startsMedia {
+		log.Printf("handshake ok:\n  mode=existing_media_session")
+		return nil
+	}
+	defer p.clearActiveSession(session)
+
+	log.Printf("handshake ok:\n  mode=new_media_session")
 
 	source, err := media.NewFFmpegSource(sessionCtx, p.options.MediaSource)
 	if err != nil {
@@ -155,4 +190,34 @@ func (p *Producer) handleConnection(parentCtx context.Context, conn *quic.Conn) 
 	defer source.Close()
 
 	return streamauth.SendSignedFrames(sessionCtx, conn, session, source)
+}
+
+func (p *Producer) buildHandshakeResponse(request *handshake.Request) (*handshake.Response, *handshake.ProducerSession, bool, error) {
+	p.sessionMu.Lock()
+	defer p.sessionMu.Unlock()
+
+	if p.activeSession != nil {
+		response, err := handshake.BuildResponseForSession(request, p.cameraCertificate, p, p.activeSession)
+		if err != nil {
+			return nil, nil, false, err
+		}
+		return response, p.activeSession, false, nil
+	}
+
+	response, session, err := handshake.BuildResponse(request, p.cameraCertificate, p)
+	if err != nil {
+		return nil, nil, false, err
+	}
+
+	p.activeSession = session
+	return response, session, true, nil
+}
+
+func (p *Producer) clearActiveSession(session *handshake.ProducerSession) {
+	p.sessionMu.Lock()
+	defer p.sessionMu.Unlock()
+
+	if p.activeSession == session {
+		p.activeSession = nil
+	}
 }

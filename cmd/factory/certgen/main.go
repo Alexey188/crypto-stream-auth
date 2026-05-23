@@ -7,17 +7,18 @@ import (
 )
 
 const (
-	rootCertPath        = "artifacts/certs/root_ca.crt"
-	rootKeyPath         = "artifacts/keys/root_ca.key"
+	rootCertPath        = "artifacts/trust/roots/root_ca2.crt"
+	rootKeyPath         = "artifacts/keys/root_ca2.key"
 	cameraID            = "cam-001"
-	cameraPublicKeyPath = "artifacts/keys/camera_public.pem"
-	cameraCertPath      = "artifacts/certs/camera.crt"
+	cameraPublicKeyPath = "artifacts/camera/camera_public2.pem"
+	cameraCertPath      = "artifacts/camera/camera2.crt"
+	cameraManifestPath  = "artifacts/trust/camera_manifest.json"
 )
 
 func main() {
-	rootCA, err := authcrypto.LoadFactoryRootCA(rootCertPath, rootKeyPath)
+	factory, err := authcrypto.LoadFactoryAuthority(rootCertPath, rootKeyPath)
 	if err != nil {
-		log.Fatalf("load root ca: %v", err)
+		log.Fatalf("load factory authority: %v", err)
 	}
 
 	cameraPublicKey, err := authcrypto.LoadRSAPublicKey(cameraPublicKeyPath)
@@ -25,14 +26,19 @@ func main() {
 		log.Fatalf("load camera public key: %v", err)
 	}
 
-	cameraCert, err := authcrypto.IssueCameraCertificate(rootCA, cameraID, cameraPublicKey)
+	cameraCert, err := factory.IssueCameraCertificate(cameraID, cameraPublicKey)
 	if err != nil {
 		log.Fatalf("issue camera certificate: %v", err)
 	}
 
-	if err := authcrypto.SaveCertificate(cameraCert, cameraCertPath); err != nil {
-		log.Fatalf("save camera certificate: %v", err)
+	manifest, err := factory.NewCameraManifest(cameraCert)
+	if err != nil {
+		log.Fatalf("create camera manifest: %v", err)
 	}
 
-	log.Printf("camera certificate issued successfully: %s", cameraCertPath)
+	if err := authcrypto.SaveCameraCertificateBundle(cameraCert, manifest, cameraCertPath, cameraManifestPath); err != nil {
+		log.Fatalf("save camera certificate bundle: %v", err)
+	}
+
+	log.Printf("camera certificate issued successfully: cert=%s manifest=%s", cameraCertPath, cameraManifestPath)
 }

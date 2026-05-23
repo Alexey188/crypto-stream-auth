@@ -1,8 +1,6 @@
 package domain
 
-import (
-	"encoding/binary"
-)
+import "encoding/binary"
 
 const (
 	SessionIDSize       = 16
@@ -22,13 +20,10 @@ type VideoFrame struct {
 }
 
 func (f *VideoFrame) BytesToSign() []byte {
-
 	buf := make([]byte, 0, SessionIDSize+8+8+len(f.Payload))
-
 	buf = append(buf, f.SessionID[:]...)
 	buf = binary.BigEndian.AppendUint64(buf, f.Sequence)
 	buf = binary.BigEndian.AppendUint64(buf, uint64(f.Timestamp))
 	buf = append(buf, f.Payload...)
-
 	return buf
 }

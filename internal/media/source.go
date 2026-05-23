@@ -38,6 +38,11 @@ type FFmpegSource struct {
 	closeErr  error
 }
 
+type PayloadReader struct {
+	reader io.Reader
+	buffer []byte
+}
+
 func NewFFmpegSource(ctx context.Context, cfg FFmpegSourceConfig) (*FFmpegSource, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -106,6 +111,33 @@ func (s *FFmpegSource) Close() error {
 		return fmt.Errorf("%w: close ffmpeg source: %w", ErrMedia, s.closeErr)
 	}
 	return nil
+}
+
+func NewPayloadReader(reader io.Reader, maxPayloadSize int) *PayloadReader {
+	if maxPayloadSize <= 0 {
+		maxPayloadSize = domain.MaxFramePayloadSize
+	}
+
+	return &PayloadReader{
+		reader: reader,
+		buffer: make([]byte, maxPayloadSize),
+	}
+}
+
+func (r *PayloadReader) NextPayload() ([]byte, error) {
+	if r == nil || r.reader == nil {
+		return nil, fmt.Errorf("%w: payload reader is nil", ErrMedia)
+	}
+
+	n, err := r.reader.Read(r.buffer)
+	if n > 0 {
+		return r.buffer[:n], nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return nil, fmt.Errorf("%w: empty payload read", ErrMedia)
 }
 
 func NewFFplaySink(ctx context.Context, ffplayPath string) (*FFplaySink, error) {
@@ -190,6 +222,7 @@ func normalizeFFmpegConfig(cfg FFmpegSourceConfig) FFmpegSourceConfig {
 func ffmpegArgs(cfg FFmpegSourceConfig) []string {
 	size := strconv.Itoa(cfg.Width) + "x" + strconv.Itoa(cfg.Height)
 	rate := strconv.Itoa(cfg.FPS)
+	x264Params := "bframes=0:rc-lookahead=0:sync-lookahead=0:keyint=" + rate + ":scenecut=0:repeat-headers=1"
 
 	return []string{
 		"-hide_banner",
@@ -207,8 +240,11 @@ func ffmpegArgs(cfg FFmpegSourceConfig) []string {
 		"-preset", "ultrafast",
 		"-tune", "zerolatency",
 		"-pix_fmt", "yuv420p",
-		"-x264-params", "keyint=" + rate + ":scenecut=0",
-		"-f", "h264",
+		"-x264-params", x264Params,
+		"-flush_packets", "1",
+		"-muxdelay", "0",
+		"-muxpreload", "0",
+		"-f", "mpegts",
 		"pipe:1",
 	}
 }
@@ -220,9 +256,10 @@ func ffplayArgs() []string {
 		"-fflags", "nobuffer",
 		"-flags", "low_delay",
 		"-framedrop",
-		"-analyzeduration", "0",
-		"-probesize", "32",
-		"-f", "h264",
+		"-sync", "ext",
+		"-analyzeduration", "100000",
+		"-probesize", "4096",
+		"-f", "mpegts",
 		"-i", "pipe:0",
 	}
 }

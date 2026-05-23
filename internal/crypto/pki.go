@@ -3,14 +3,18 @@ package crypto
 import (
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"math/big"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -27,11 +31,43 @@ var (
 const (
 	rootCAKeyBits = 4096
 	cameraKeyBits = 2048
+
+	cameraIdentityScheme = "trustcam"
+	cameraIdentityPrefix = "camera:"
 )
 
 type RootCA struct {
 	PrivateKey  *rsa.PrivateKey
 	Certificate *x509.Certificate
+}
+
+type FactoryAuthority struct {
+	rootCA *RootCA
+}
+
+func NewFactoryAuthority(rootCA *RootCA) (*FactoryAuthority, error) {
+	if err := validateRootCA(rootCA); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrLoadFactory, err)
+	}
+
+	return &FactoryAuthority{rootCA: rootCA}, nil
+}
+
+func LoadFactoryAuthority(certPath, keyPath string) (*FactoryAuthority, error) {
+	rootCA, err := LoadFactoryRootCA(certPath, keyPath)
+	if err != nil {
+		return nil, err
+	}
+
+	return &FactoryAuthority{rootCA: rootCA}, nil
+}
+
+func (factory *FactoryAuthority) IssueCameraCertificate(cameraID string, cameraPublicKey *rsa.PublicKey) (*x509.Certificate, error) {
+	if factory == nil {
+		return nil, fmt.Errorf("%w: factory authority is nil", ErrIssueCameraCertificate)
+	}
+
+	return IssueCameraCertificate(factory.rootCA, cameraID, cameraPublicKey)
 }
 
 func GenerateRootCA(orgName string) (*RootCA, error) {
@@ -89,15 +125,17 @@ func LoadFactoryRootCA(certPath, keyPath string) (*RootCA, error) {
 		return nil, fmt.Errorf("%w: load private key: %w", ErrLoadFactory, err)
 	}
 
-	if err := validateRootCAPrivateKey(key); err != nil {
-		return nil, fmt.Errorf("%w: invalid private key: %w", ErrLoadFactory, err)
-	}
-
-	return &RootCA{
+	rootCA := &RootCA{
 		Certificate: cert,
 		PrivateKey:  key,
-	}, nil
+	}
+	if err := validateRootCA(rootCA); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrLoadFactory, err)
+	}
+
+	return rootCA, nil
 }
+
 func LoadCertificate(path string) (*x509.Certificate, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -140,18 +178,10 @@ func LoadRSAPrivateKey(path string) (*rsa.PrivateKey, error) {
 
 	return rsaKey, nil
 }
+
 func SaveRootCA(rootCA *RootCA, certPath, keyPath string) error {
-
-	if rootCA == nil {
-		return fmt.Errorf("%w: certificate generator is nil", ErrSaveRootCA)
-	}
-
-	if rootCA.Certificate == nil {
-		return fmt.Errorf("%w: certificate is nil", ErrSaveRootCA)
-	}
-
-	if err := validateRootCAPrivateKey(rootCA.PrivateKey); err != nil {
-		return fmt.Errorf("%w: invalid RootCA private key: %w", ErrSaveRootCA, err)
+	if err := validateRootCA(rootCA); err != nil {
+		return fmt.Errorf("%w: invalid RootCA: %w", ErrSaveRootCA, err)
 	}
 
 	privBytes, err := x509.MarshalPKCS8PrivateKey(rootCA.PrivateKey)
@@ -180,24 +210,20 @@ func SaveRootCA(rootCA *RootCA, certPath, keyPath string) error {
 }
 
 func IssueCameraCertificate(rootCA *RootCA, cameraID string, cameraPublicKey *rsa.PublicKey) (*x509.Certificate, error) {
-	if rootCA == nil {
-		return nil, fmt.Errorf("%w: RootCa is nil", ErrIssueCameraCertificate)
+	if err := validateCameraID(cameraID); err != nil {
+		return nil, fmt.Errorf("%w: invalid camera id: %w", ErrIssueCameraCertificate, err)
 	}
-
-	if rootCA.Certificate == nil {
-		return nil, fmt.Errorf("%w: RootCa certificate is nil", ErrIssueCameraCertificate)
-	}
-
-	if cameraID == "" {
-		return nil, fmt.Errorf("%w: CameraID invalid value", ErrIssueCameraCertificate)
-
-	}
-	if err := validateRootCAPrivateKey(rootCA.PrivateKey); err != nil {
-		return nil, fmt.Errorf("%w: invalid RootCA private key: %w", ErrIssueCameraCertificate, err)
+	if err := validateRootCA(rootCA); err != nil {
+		return nil, fmt.Errorf("%w: invalid RootCA: %w", ErrIssueCameraCertificate, err)
 	}
 
 	if err := validateCameraPublicKey(cameraPublicKey); err != nil {
 		return nil, fmt.Errorf("%w: invalid Camera public key: %w", ErrIssueCameraCertificate, err)
+	}
+
+	cameraUID, err := CameraUIDFromPublicKey(cameraPublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("%w: calculate camera uid: %w", ErrIssueCameraCertificate, err)
 	}
 
 	serialNumber, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
@@ -214,6 +240,7 @@ func IssueCameraCertificate(rootCA *RootCA, cameraID string, cameraPublicKey *rs
 		},
 		NotBefore: now.Add(-time.Minute),
 		NotAfter:  now.Add(365 * 24 * time.Hour),
+		URIs:      []*url.URL{cameraIdentityURI(cameraUID)},
 
 		KeyUsage:              x509.KeyUsageDigitalSignature,
 		SignatureAlgorithm:    x509.SHA384WithRSAPSS,
@@ -282,7 +309,131 @@ func VerifyCameraCertificate(cameraCertificate *x509.Certificate, rootCA *x509.C
 		)
 	}
 
+	cameraUID, err := ExtractCameraUID(cameraCertificate)
+	if err != nil {
+		return nil, fmt.Errorf("%w: extract camera uid: %w", ErrInvalidCertificate, err)
+	}
+
+	expectedCameraUID, err := CameraUIDFromPublicKey(cameraPublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("%w: calculate camera uid: %w", ErrInvalidCertificate, err)
+	}
+	if cameraUID != expectedCameraUID {
+		return nil, fmt.Errorf("%w: camera uid mismatch", ErrInvalidCertificate)
+	}
+
 	return cameraPublicKey, nil
+}
+
+func ExtractCameraUID(cert *x509.Certificate) (string, error) {
+	if cert == nil {
+		return "", fmt.Errorf("%w: certificate is nil", ErrInvalidCertificate)
+	}
+
+	for _, uri := range cert.URIs {
+		if uri == nil || uri.Scheme != cameraIdentityScheme {
+			continue
+		}
+		if !strings.HasPrefix(uri.Opaque, cameraIdentityPrefix) {
+			continue
+		}
+
+		cameraUID := strings.TrimPrefix(uri.Opaque, cameraIdentityPrefix)
+		if err := validateCameraUID(cameraUID); err != nil {
+			return "", fmt.Errorf("%w: invalid camera uid in certificate: %w", ErrInvalidCertificate, err)
+		}
+		return cameraUID, nil
+	}
+
+	return "", fmt.Errorf("%w: camera uid SAN URI is missing", ErrInvalidCertificate)
+}
+
+func CameraUIDFromPublicKey(publicKey *rsa.PublicKey) (string, error) {
+	if err := validateCameraPublicKey(publicKey); err != nil {
+		return "", err
+	}
+
+	data, err := x509.MarshalPKIXPublicKey(publicKey)
+	if err != nil {
+		return "", fmt.Errorf("marshal camera public key: %w", err)
+	}
+
+	return SHA256Hex(data), nil
+}
+
+func SHA256Hex(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func cameraIdentityURI(cameraUID string) *url.URL {
+	return &url.URL{
+		Scheme: cameraIdentityScheme,
+		Opaque: cameraIdentityPrefix + cameraUID,
+	}
+}
+
+func validateRootCA(rootCA *RootCA) error {
+	if rootCA == nil {
+		return fmt.Errorf("RootCA is nil")
+	}
+	if rootCA.Certificate == nil {
+		return fmt.Errorf("RootCA certificate is nil")
+	}
+	if err := validateRootCAPrivateKey(rootCA.PrivateKey); err != nil {
+		return fmt.Errorf("invalid RootCA private key: %w", err)
+	}
+	if err := validateRootCACertificate(rootCA.Certificate); err != nil {
+		return fmt.Errorf("invalid RootCA certificate: %w", err)
+	}
+	if err := validateRootCAKeyPair(rootCA.Certificate, rootCA.PrivateKey); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func validateRootCACertificate(cert *x509.Certificate) error {
+	if cert == nil {
+		return fmt.Errorf("certificate is nil")
+	}
+	if !cert.IsCA {
+		return fmt.Errorf("certificate must be CA")
+	}
+	if cert.KeyUsage&x509.KeyUsageCertSign == 0 {
+		return fmt.Errorf("certificate missing cert sign key usage")
+	}
+	if cert.SignatureAlgorithm != x509.SHA384WithRSAPSS {
+		return fmt.Errorf("certificate signature algorithm is %s, want %s", cert.SignatureAlgorithm, x509.SHA384WithRSAPSS)
+	}
+	if err := cert.CheckSignatureFrom(cert); err != nil {
+		return fmt.Errorf("certificate self signature is invalid: %w", err)
+	}
+
+	publicKey, ok := cert.PublicKey.(*rsa.PublicKey)
+	if !ok {
+		return fmt.Errorf("certificate public key is not RSA")
+	}
+	if publicKey.N == nil {
+		return fmt.Errorf("certificate public key modulus is nil")
+	}
+	if publicKey.N.BitLen() != rootCAKeyBits {
+		return fmt.Errorf("certificate public key size is %d bits, want %d", publicKey.N.BitLen(), rootCAKeyBits)
+	}
+
+	return nil
+}
+
+func validateRootCAKeyPair(cert *x509.Certificate, key *rsa.PrivateKey) error {
+	certPublicKey, ok := cert.PublicKey.(*rsa.PublicKey)
+	if !ok {
+		return fmt.Errorf("RootCA certificate public key is not RSA")
+	}
+	if certPublicKey.N.Cmp(key.PublicKey.N) != 0 || certPublicKey.E != key.PublicKey.E {
+		return fmt.Errorf("RootCA certificate and private key do not match")
+	}
+
+	return nil
 }
 
 func validateRootCAPrivateKey(key *rsa.PrivateKey) error {
@@ -308,6 +459,28 @@ func validateCameraPublicKey(key *rsa.PublicKey) error {
 	if key.N.BitLen() != cameraKeyBits {
 		return fmt.Errorf("public key size is %d bits, want %d", key.N.BitLen(), cameraKeyBits)
 	}
+	return nil
+}
+
+func validateCameraID(cameraID string) error {
+	if cameraID == "" {
+		return fmt.Errorf("camera id is empty")
+	}
+	if strings.TrimSpace(cameraID) != cameraID {
+		return fmt.Errorf("camera id has surrounding spaces")
+	}
+	if strings.Contains(cameraID, ":") {
+		return fmt.Errorf("camera id must not contain ':'")
+	}
+
+	return nil
+}
+
+func validateCameraUID(cameraUID string) error {
+	if !isSHA256Hex(cameraUID) {
+		return fmt.Errorf("camera uid must be sha256 hex")
+	}
+
 	return nil
 }
 

@@ -4,26 +4,18 @@ import (
 	"context"
 	"crypto-stream-auth/internal/app/producer"
 	"crypto-stream-auth/internal/media"
-	"crypto-stream-auth/internal/tpm"
 	"log"
-	"time"
 )
 
 const (
 	listenAddr     = "127.0.0.1:4242"
-	cameraCertPath = "artifacts/certs/camera.crt"
-
-	handshakeTimeout = 5 * time.Second
-	idleTimeout      = 30 * time.Second
+	cameraCertPath = "artifacts/camera/camera2.crt"
 )
 
 func main() {
 	prod, err := producer.New(producer.Options{
-		ListenAddr:       listenAddr,
-		CameraCertPath:   cameraCertPath,
-		CameraKeyHandle:  tpm.DefaultCameraKeyHandle,
-		HandshakeTimeout: handshakeTimeout,
-		IdleTimeout:      idleTimeout,
+		ListenAddr:     listenAddr,
+		CameraCertPath: cameraCertPath,
 		MediaSource: media.FFmpegSourceConfig{
 			Width:  640,
 			Height: 360,

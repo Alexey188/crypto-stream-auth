@@ -37,6 +37,21 @@ func TestFrameValidationAnomalies(t *testing.T) {
 		}
 	})
 
+	t.Run("rejects_old_sequence", func(t *testing.T) {
+		publicKey, privateKey := newEd25519Keys(t)
+		sessionID := testStreamSessionID()
+		validator := newFrameValidator(t, sessionID, publicKey)
+
+		if err := validator.ValidateFrame(signedFrame(t, privateKey, sessionID, 10, time.Now())); err != nil {
+			t.Fatalf("ValidateFrame() error = %v", err)
+		}
+
+		err := validator.ValidateFrame(signedFrame(t, privateKey, sessionID, 9, time.Now()))
+		if !errors.Is(err, ErrValidateFrame) {
+			t.Fatalf("ValidateFrame() error = %v, want %v", err, ErrValidateFrame)
+		}
+	})
+
 	t.Run("rejects_wrong_session_id", func(t *testing.T) {
 		publicKey, privateKey := newEd25519Keys(t)
 		sessionID := testStreamSessionID()

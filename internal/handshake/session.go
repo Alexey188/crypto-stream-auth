@@ -21,6 +21,18 @@ type RSAPSSSigner interface {
 	SignPSS(digest []byte) ([]byte, error)
 }
 
+type CameraCertificateVerifier interface {
+	VerifyCameraCertificate(cameraCertificate *x509.Certificate) (*rsa.PublicKey, error)
+}
+
+type rootCAVerifier struct {
+	rootCA *x509.Certificate
+}
+
+func (verifier rootCAVerifier) VerifyCameraCertificate(cameraCertificate *x509.Certificate) (*rsa.PublicKey, error) {
+	return authcrypto.VerifyCameraCertificate(cameraCertificate, verifier.rootCA)
+}
+
 type HandshakePayload struct {
 	CameraCertificate  *x509.Certificate
 	EphemeralPublicKey ed25519.PublicKey
@@ -47,26 +59,37 @@ func BuildHandshakeMessage(sessionID [SessionIDSize]byte, nonce [NonceSize]byte,
 func GenerateHandshake(cameraCertificate *x509.Certificate, signer RSAPSSSigner, sessionID [SessionIDSize]byte,
 	nonce [NonceSize]byte, timestamp int64) (*HandshakePayload, ed25519.PrivateKey, error) {
 
-	if cameraCertificate == nil {
-		return nil, nil, fmt.Errorf("%w: camera certificate is nil", ErrInvalidHandshake)
-	}
-	if signer == nil {
-		return nil, nil, fmt.Errorf("%w: signer is nil", ErrInvalidHandshake)
-	}
-
 	ephemeralPublicKey, ephemeralPrivateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%w: generate ephemeral keys: %w", ErrInvalidHandshake, err)
 	}
 
-	digest, err := buildHandshakeDigest(sessionID, nonce, timestamp, ephemeralPublicKey)
+	payload, err := SignHandshake(cameraCertificate, signer, sessionID, nonce, timestamp, ephemeralPublicKey)
 	if err != nil {
 		return nil, nil, err
 	}
 
+	return payload, ephemeralPrivateKey, nil
+}
+
+func SignHandshake(cameraCertificate *x509.Certificate, signer RSAPSSSigner, sessionID [SessionIDSize]byte,
+	nonce [NonceSize]byte, timestamp int64, ephemeralPublicKey ed25519.PublicKey) (*HandshakePayload, error) {
+
+	if cameraCertificate == nil {
+		return nil, fmt.Errorf("%w: camera certificate is nil", ErrInvalidHandshake)
+	}
+	if signer == nil {
+		return nil, fmt.Errorf("%w: signer is nil", ErrInvalidHandshake)
+	}
+
+	digest, err := buildHandshakeDigest(sessionID, nonce, timestamp, ephemeralPublicKey)
+	if err != nil {
+		return nil, err
+	}
+
 	signature, err := signer.SignPSS(digest[:])
 	if err != nil {
-		return nil, nil, fmt.Errorf("%w: sign handshake: %w", ErrInvalidHandshake, err)
+		return nil, fmt.Errorf("%w: sign handshake: %w", ErrInvalidHandshake, err)
 	}
 
 	return &HandshakePayload{
@@ -76,12 +99,23 @@ func GenerateHandshake(cameraCertificate *x509.Certificate, signer RSAPSSSigner,
 		ConsumerNonce:      nonce,
 		Timestamp:          timestamp,
 		Signature:          signature,
-	}, ephemeralPrivateKey, nil
+	}, nil
 }
 
 func VerifyHandshake(payload *HandshakePayload, rootCA *x509.Certificate, consumerNonce [NonceSize]byte, maxHandshakeAge time.Duration) error {
+	return verifyHandshake(payload, rootCAVerifier{rootCA: rootCA}, consumerNonce, maxHandshakeAge)
+}
+
+func VerifyHandshakeWithTrustStore(payload *HandshakePayload, trustStore *authcrypto.TrustStore, consumerNonce [NonceSize]byte, maxHandshakeAge time.Duration) error {
+	return verifyHandshake(payload, trustStore, consumerNonce, maxHandshakeAge)
+}
+
+func verifyHandshake(payload *HandshakePayload, verifier CameraCertificateVerifier, consumerNonce [NonceSize]byte, maxHandshakeAge time.Duration) error {
 	if payload == nil {
 		return fmt.Errorf("%w: payload is nil", ErrInvalidHandshake)
+	}
+	if verifier == nil {
+		return fmt.Errorf("%w: certificate verifier is nil", ErrInvalidHandshake)
 	}
 	if payload.ConsumerNonce != consumerNonce {
 		return fmt.Errorf("%w: consumer nonce mismatch", ErrInvalidHandshake)
@@ -99,7 +133,7 @@ func VerifyHandshake(payload *HandshakePayload, rootCA *x509.Certificate, consum
 		return fmt.Errorf("%w: timestamp is expired", ErrInvalidHandshake)
 	}
 
-	cameraPublicKey, err := authcrypto.VerifyCameraCertificate(payload.CameraCertificate, rootCA)
+	cameraPublicKey, err := verifier.VerifyCameraCertificate(payload.CameraCertificate)
 	if err != nil {
 		return fmt.Errorf("%w: verify camera certificate: %w", ErrInvalidHandshake, err)
 	}

@@ -2,71 +2,74 @@
 
 Прототип сетевого протокола непрерывной криптографической аутентификации медиапотока в реальном времени.
 
-Цель проекта: подтвердить, что видеопоток поступает от доверенного аппаратного источника и не был изменён при передаче через сеть или сервер.
+Цель проекта: подтвердить, что медиапоток поступает от доверенного аппаратного источника и не был изменён при передаче через сеть или сервер.
 
 ## Идея
 
 Система строится по принципу сквозного доверия:
 
-- producer (продюсер, камера или эмулятор) подписывает контекст рукопожатия аппаратным ключом из TPM (Trusted Platform Module, доверенный платформенный модуль);
-- producer (продюсер) подписывает каждый кадр временным ключом Ed25519;
-- server (сервер) проверяет сертификат камеры и маршрутизирует поток как Fast Pipe (быстрый канал передачи);
-- consumer (консюмер) самостоятельно проверяет сертификат камеры, подпись рукопожатия и подписи кадров.
+- producer (продюсер, камера или эмулятор) имеет сертификат X.509 (стандарт сертификатов открытого ключа), выпущенный заводским RSA Root CA (Rivest-Shamir-Adleman Root Certificate Authority, корневой центр сертификации RSA);
+- долговременный закрытый ключ камеры RSA-2048 (Rivest-Shamir-Adleman, криптосистема с открытым ключом) создаётся и хранится в TPM (Trusted Platform Module, доверенный платформенный модуль);
+- handshake (рукопожатие) подписывается аппаратным ключом из TPM (Trusted Platform Module, доверенный платформенный модуль) по схеме RSA-PSS (Probabilistic Signature Scheme, вероятностная схема подписи RSA) + SHA-256 (Secure Hash Algorithm, защищённый алгоритм хеширования);
+- каждый кадр подписывается временным ключом Ed25519, созданным в RAM (Random Access Memory, оперативная память) для текущей сессии;
+- server (сервер) проверяет сертификат камеры и маршрутизирует поток;
+- consumer (консюмер) самостоятельно проверяет сертификат камеры, подпись handshake (рукопожатия) и подписи кадров.
 
-Сервер не проверяет подпись каждого кадра. Это сохраняет модель сквозного доверия: доверие устанавливается между камерой и консюмером.
+Сервер не проверяет подпись каждого кадра. Он работает как Fast Pipe (быстрый канал передачи), а доверие устанавливается между камерой и консюмером.
 
 ## Текущая реализация
 
 - Язык: Go (язык программирования).
-- Транспорт: QUIC (Quick UDP Internet Connections, быстрые UDP-соединения) поверх UDP (User Datagram Protocol, пользовательский протокол датаграмм).
-- Текущий режим передачи: один QUIC-стрим.
+- Транспорт: QUIC (Quick UDP Internet Connections, быстрые соединения поверх UDP) поверх UDP (User Datagram Protocol, протокол пользовательских датаграмм).
+- Текущий режим передачи: один QUIC stream (стрим, логический поток).
 - Сертификаты: X.509 (стандарт сертификатов открытого ключа).
-- Root CA (корневой центр сертификации): RSA (Rivest-Shamir-Adleman, криптосистема с открытым ключом) 4096.
+- Root CA (Root Certificate Authority, корневой центр сертификации): RSA-4096 (Rivest-Shamir-Adleman, криптосистема с открытым ключом).
 - Сертификат камеры: RSA-PSS (Probabilistic Signature Scheme, вероятностная схема подписи RSA) + SHA-384 (Secure Hash Algorithm, защищённый алгоритм хеширования).
-- Ключ камеры в TPM: RSA 2048.
-- Подпись рукопожатия: RSA-PSS + SHA-256.
+- Ключ камеры в TPM (Trusted Platform Module, доверенный платформенный модуль): RSA-2048 (Rivest-Shamir-Adleman, криптосистема с открытым ключом).
+- Подпись handshake (рукопожатия): RSA-PSS (Probabilistic Signature Scheme, вероятностная схема подписи RSA) + SHA-256 (Secure Hash Algorithm, защищённый алгоритм хеширования).
 - Подпись кадров: Ed25519.
-- Медиаисточник: FFmpeg (набор медиаутилит).
+- Источник медиа: FFmpeg (набор медиаутилит).
 - Отображение: ffplay (проигрыватель из FFmpeg).
+- Демонстрационный контейнер: MPEG-TS (MPEG Transport Stream, транспортный поток MPEG).
 - Демонстрационный видеокодек: H.264 (стандарт видеокодирования).
 
-H.264 не является частью протокола. Протокол работает с `payload` как с ограниченной полезной нагрузкой и не разбирает структуру видеокодека.
+Протокол не привязан к H.264 (стандарту видеокодирования) или MPEG-TS (MPEG Transport Stream, транспортному потоку MPEG). Он подписывает ограниченный по размеру `payload` — полезную нагрузку — и не разбирает внутреннюю структуру видеокодека.
 
 ## Архитектура
 
 ```text
-consumer -> server -> producer
-producer -> server -> consumer
+consumer -> server -> producer   handshake request
+producer -> server -> consumer   handshake response
+producer -> server -> consumers  signed media frames
 ```
 
-Логика разделена по пакетам:
+Основные пакеты:
 
 ```text
-internal/transport  QUIC, TLS, чтение и запись сообщений
-internal/handshake  формат и проверка рукопожатия
-internal/crypto     X.509, Root CA, сертификаты, подписи кадров
-internal/tpm        работа с TPM-ключом камеры
-internal/stream     отправка, приём, проверка кадров, политика ошибок
-internal/media      FFmpeg-источник и ffplay-вывод
-internal/domain     доменные структуры кадра
-internal/app        сборка producer/server/consumer
-cmd                 точки входа
+internal/app       сборка приложений producer/server/consumer
+internal/transport QUIC, TLS, чтение и запись сообщений
+internal/handshake формат, подпись и проверка рукопожатия
+internal/crypto    X.509, Root CA, сертификаты, trust manifest, подписи кадров
+internal/tpm       работа с аппаратным ключом камеры
+internal/stream    отправка, приём, проверка кадров и политика реакции
+internal/media     FFmpeg-источник и ffplay-вывод
+internal/domain    общие доменные структуры кадра
+cmd                точки входа
 ```
+
+Сейчас поддерживается один producer (продюсер) и несколько consumer (консюмеров). Поддержка нескольких producer (продюсеров) оставлена как следующий этап.
 
 ## Формат доверия
 
 На этапе подготовки устройства:
 
-1. В TPM создаётся долговременный закрытый ключ камеры RSA 2048.
+1. В TPM (Trusted Platform Module, доверенном платформенном модуле) создаётся долговременный закрытый ключ камеры RSA-2048.
 2. Публичный ключ камеры экспортируется в файл.
-3. Заводской Root CA выпускает сертификат камеры.
-4. Закрытый ключ камеры не покидает TPM.
+3. Заводской RSA Root CA (Rivest-Shamir-Adleman Root Certificate Authority, корневой центр сертификации RSA) выпускает сертификат камеры.
+4. Манифест связывает UID (Unique Identifier, уникальный идентификатор) камеры, отпечаток сертификата камеры и отпечаток Root CA (Root Certificate Authority, корневого центра сертификации).
+5. Закрытый ключ камеры не покидает TPM (Trusted Platform Module, доверенный платформенный модуль).
 
-При запуске сессии:
-
-1. Consumer (консюмер) создаёт `nonce` — одноразовое случайное число.
-2. Producer (продюсер) создаёт временный ключ Ed25519.
-3. Producer (продюсер) подписывает контекст:
+Во время handshake (рукопожатия) подписывается:
 
 ```text
 Session ID
@@ -74,8 +77,6 @@ consumer nonce
 timestamp
 ephemeral public key
 ```
-
-4. Consumer (консюмер) проверяет сертификат камеры, подпись рукопожатия и связывает временный Ed25519-ключ с текущей сессией.
 
 Каждый кадр подписывается по данным:
 
@@ -86,41 +87,41 @@ Timestamp
 Payload
 ```
 
-## Проверки кадров
+## Проверка кадров
 
 Consumer (консюмер) проверяет:
 
 - `Session ID` — идентификатор сессии;
 - `Sequence ID` — порядковый номер кадра;
-- `Timestamp` — временную метку на корректность формата;
+- `Timestamp` — временную метку;
 - размер `payload` — полезной нагрузки;
 - подпись Ed25519;
 - долю кадров с некорректной подписью.
 
-Если за окно 3 секунды получено более 30 кадров и больше 20% из них имеют некорректную подпись, consumer (консюмер) запрашивает новое рукопожатие. Если после повторного рукопожатия ситуация повторяется, соединение считается недоверенным.
+Если за окно 3 секунды получено больше 30 кадров и больше 20% из них имеют некорректную подпись, consumer (консюмер) запрашивает новый handshake (рукопожатие). Если после повторного handshake (рукопожатия) ситуация повторяется, соединение считается недоверенным.
 
-## Зависимости
+## Подготовка
 
 Нужны:
 
-- Go 1.26;
-- FFmpeg с `ffmpeg` и `ffplay` в `PATH`;
-- Windows TPM для реального режима TPM;
+- Go (язык программирования) 1.26;
+- FFmpeg (набор медиаутилит) с командами `ffmpeg` и `ffplay` в `PATH`;
+- Windows TPM (Trusted Platform Module, доверенный платформенный модуль) для реального аппаратного ключа;
 - камера DirectShow с именем `HD User Facing`.
 
-Список камер в Windows:
+Проверить список камер Windows:
 
 ```powershell
 ffmpeg -list_devices true -f dshow -i dummy
 ```
 
-Если имя камеры отличается, поменяй строку `video=HD User Facing` в `internal/media/source.go`.
+Если имя камеры другое, измени строку `video=HD User Facing` в `internal/media/source.go`.
 
-## Подготовка ключей и сертификатов
+## Ключи и сертификаты
 
 Команды выполнять из корня проекта.
 
-1. Создать Root CA:
+1. Создать Root CA (Root Certificate Authority, корневой центр сертификации):
 
 ```powershell
 go run ./cmd/factory/rootgen
@@ -129,11 +130,11 @@ go run ./cmd/factory/rootgen
 Создаются:
 
 ```text
-artifacts/certs/root_ca.crt
-artifacts/keys/root_ca.key
+artifacts/trust/roots/root_ca2.crt
+artifacts/keys/root_ca2.key
 ```
 
-2. Создать или открыть ключ камеры в TPM и экспортировать публичный ключ:
+2. Создать или открыть ключ камеры в TPM (Trusted Platform Module, доверенном платформенном модуле) и экспортировать публичный ключ:
 
 ```powershell
 go run ./cmd/producer/provision
@@ -142,7 +143,7 @@ go run ./cmd/producer/provision
 Создаётся:
 
 ```text
-artifacts/keys/camera_public.pem
+artifacts/camera/camera_public2.pem
 ```
 
 3. Выпустить сертификат камеры:
@@ -151,13 +152,14 @@ artifacts/keys/camera_public.pem
 go run ./cmd/factory/certgen
 ```
 
-Создаётся:
+Создаются или обновляются:
 
 ```text
-artifacts/certs/camera.crt
+artifacts/camera/camera2.crt
+artifacts/trust/camera_manifest.json
 ```
 
-Файлы создаются безопасно: если файл уже существует, он не перетирается.
+Файлы сертификатов и ключей не перетираются случайно: для новых файлов используется создание только если файла ещё нет, а манифест обновляется отдельно.
 
 ## Запуск
 
@@ -181,31 +183,31 @@ go run ./cmd/server
 go run ./cmd/consumer
 ```
 
-После успешного рукопожатия consumer (консюмер) откроет окно `ffplay` и начнёт показывать поток.
+После успешного handshake (рукопожатия) consumer (консюмер) откроет окно `ffplay` и начнёт показывать поток.
 
 ## Логи
 
-В нормальном режиме успешные кадры по одному не логируются. Вместо этого раз в секунду выводится статистика:
+Успешные кадры не логируются по одному. Раз в секунду выводится статистика:
 
 ```text
 producer stats: frames=30 bytes=840000 fps=29.8 avg_payload=28000
-server relay stats: frames=30 bytes=840000 fps=29.9 avg_payload=28000
+server relay stats: frames=30 bytes=840000 fps=29.9 avg_payload=28000 consumers=2
 consumer stats: accepted=30 dropped=0 bad_signatures=0 bytes=840000 fps=29.7 avg_payload=28000
 ```
 
-Ошибки, отброшенные кадры и проблемы подписи логируются сразу.
+Ошибки handshake (рукопожатия), отброшенные кадры и проблемы подписи логируются сразу.
 
 ## TPM
 
-Текущий постоянный идентификатор ключа камеры:
+Текущий постоянный handle (идентификатор объекта TPM) ключа камеры:
 
 ```text
-0x81000001
+0x81000005
 ```
 
-Он задан как `DefaultCameraKeyHandle` в `internal/tpm/handles.go`.
+Он задан как `DefaultCameraKeyHandle` в `internal/tpm/signer.go`.
 
-Удалить ключ из TPM:
+Удалить ключ из TPM (Trusted Platform Module, доверенного платформенного модуля):
 
 ```powershell
 go run ./cmd/producer/evict --confirm
@@ -215,48 +217,49 @@ go run ./cmd/producer/evict --confirm
 
 ## Тесты
 
-Запуск всех тестов:
+Запустить все тесты:
 
 ```powershell
 go test ./...
 ```
 
-Тесты покрывают:
+Запустить только сценарии угроз:
 
-- корректный и некорректный handshake (рукопожатие);
-- replay-атаку (атаку повторного воспроизведения) на handshake;
-- повреждение подписи handshake;
-- проверку сертификата камеры;
-- подмену `payload`;
-- повторный `Sequence ID`;
-- неверный `Session ID`;
-- некорректную подпись кадра;
-- политику реакции на плохие подписи.
+```powershell
+go test -v ./internal/handshake ./internal/stream -run Threat
+```
 
-## Ограничения текущей версии
+Проверяемые угрозы:
 
-- Поддерживается один producer (продюсер) и один consumer (консюмер) через server (сервер).
-- Fan-out (рассылка одного потока нескольким консюмерам) пока не реализован.
-- Реестр нескольких камер пока не реализован.
-- Используется один QUIC-стрим.
-- H.264 используется только как демонстрационный формат для FFmpeg и ffplay.
-- TLS (Transport Layer Security, протокол защищённого транспорта) в QUIC используется локально с тестовым сертификатом; доверие медиапотока строится не на TLS, а на Root CA камеры и подписях кадров.
+```text
+threat_01_rejects_foreign_camera_certificate
+threat_02_rejects_replayed_handshake_response
+threat_03_rejects_expired_handshake_timestamp
+threat_04_rejects_tampered_handshake_signature
+threat_05_rejects_tampered_payload
+threat_06_rejects_replayed_frame
+threat_07_rejects_old_frame_sequence
+threat_08_rejects_foreign_session_id
+```
 
 ## Важные файлы
 
 ```text
-cmd/factory/rootgen       создание Root CA
-cmd/producer/provision    создание TPM-ключа и экспорт публичного ключа
-cmd/factory/certgen       выпуск сертификата камеры
-cmd/producer              запуск продюсера
-cmd/server                запуск сервера
-cmd/consumer              запуск консюмера
+cmd/factory/rootgen/main.go              создание Root CA
+cmd/producer/provision/main.go           создание TPM-ключа и экспорт публичного ключа
+cmd/factory/certgen/main.go              выпуск сертификата камеры
+cmd/producer/main.go                     запуск producer
+cmd/server/main.go                       запуск server
+cmd/consumer/main.go                     запуск consumer
+internal/app/server/media_hub.go         рассылка потока нескольким consumer
+internal/handshake/security_threats_test.go
+internal/stream/frame_security_threats_test.go
 ```
 
-Секретные файлы:
+Секретный файл:
 
 ```text
-artifacts/keys/root_ca.key
+artifacts/keys/root_ca2.key
 ```
 
 Этот ключ нельзя публиковать или хранить в открытом репозитории.

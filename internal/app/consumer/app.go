@@ -2,7 +2,6 @@ package consumer
 
 import (
 	"context"
-	"crypto/x509"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -18,7 +17,7 @@ import (
 
 type Options struct {
 	ServerAddr         string
-	RootCAPath         string
+	TrustDir           string
 	FFplayPath         string
 	HandshakeTimeout   time.Duration
 	MaxHandshakeAge    time.Duration
@@ -30,20 +29,47 @@ type Options struct {
 }
 
 type Consumer struct {
-	options Options
-	rootCA  *x509.Certificate
+	options    Options
+	trustStore *authcrypto.TrustStore
 }
 
 func New(options Options) (*Consumer, error) {
-	rootCA, err := authcrypto.LoadCertificate(options.RootCAPath)
+	options = withDefaults(options)
+
+	trustStore, err := authcrypto.LoadTrustStore(options.TrustDir)
 	if err != nil {
-		return nil, fmt.Errorf("load root ca certificate: %w", err)
+		return nil, fmt.Errorf("load trust store: %w", err)
 	}
 
 	return &Consumer{
-		options: options,
-		rootCA:  rootCA,
+		options:    options,
+		trustStore: trustStore,
 	}, nil
+}
+
+func withDefaults(options Options) Options {
+	if options.HandshakeTimeout <= 0 {
+		options.HandshakeTimeout = 5 * time.Second
+	}
+	if options.MaxHandshakeAge <= 0 {
+		options.MaxHandshakeAge = 10 * time.Second
+	}
+	if options.MaxSessionAttempts <= 0 {
+		options.MaxSessionAttempts = 2
+	}
+	if options.IdleTimeout <= 0 {
+		options.IdleTimeout = 30 * time.Second
+	}
+	if options.PolicyWindow <= 0 {
+		options.PolicyWindow = 3 * time.Second
+	}
+	if options.PolicyMinFrames <= 0 {
+		options.PolicyMinFrames = 30
+	}
+	if options.PolicyBadRatio <= 0 {
+		options.PolicyBadRatio = 0.2
+	}
+	return options
 }
 
 func (c *Consumer) Run(ctx context.Context) error {
@@ -74,13 +100,17 @@ func (c *Consumer) runSession(parentCtx context.Context) error {
 
 	request, err := handshake.NewRequest()
 	if err != nil {
-		return fmt.Errorf("create handshake request: %w", err)
+		return fmt.Errorf("create handshake request: %w\n", err)
 	}
+	log.Printf("handshake request created:\n  protocol_version=%d\n  consumer_nonce=%s",
+		request.ProtocolVersion,
+		hex.EncodeToString(request.ConsumerNonce[:]),
+	)
 
 	handshakeCtx, handshakeCancel := context.WithTimeout(sessionCtx, c.options.HandshakeTimeout)
 	defer handshakeCancel()
 
-	quicConfig := transport.NewQUICConfig(c.options.HandshakeTimeout, c.options.IdleTimeout, transport.MediaStreamCount+1)
+	quicConfig := transport.NewQUICConfig(c.options.HandshakeTimeout, c.options.IdleTimeout)
 	conn, err := transport.Dial(handshakeCtx, c.options.ServerAddr, transport.NewLocalClientTLSConfig(), quicConfig)
 	if err != nil {
 		return fmt.Errorf("dial server: %w", err)
@@ -100,13 +130,30 @@ func (c *Consumer) runSession(parentCtx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("read handshake response: %w", err)
 	}
+	log.Printf("handshake response received:\n  session_id=%s\n  certificate_sha256=%s\n  ephemeral_public_key=%s\n  timestamp=%d\n  signature_bytes=%d",
+		hex.EncodeToString(response.SessionID[:]),
+		authcrypto.SHA256Hex(response.CameraCertificateDER),
+		hex.EncodeToString(response.EphemeralPublicKey),
+		response.Timestamp,
+		len(response.Signature),
+	)
 
-	session, err := handshake.VerifyResponse(response, c.rootCA, request, c.options.MaxHandshakeAge)
+	session, err := handshake.VerifyResponseWithTrustStore(response, c.trustStore, request, c.options.MaxHandshakeAge)
 	if err != nil {
 		return fmt.Errorf("verify handshake response: %w", err)
 	}
 
-	log.Printf("handshake ok: session_id=%s", hex.EncodeToString(session.SessionID[:]))
+	cameraUID, err := authcrypto.ExtractCameraUID(session.CameraCertificate)
+	if err != nil {
+		return fmt.Errorf("extract camera uid: %w", err)
+	}
+	log.Printf("handshake response verified:\n  session_id=%s\n  camera_id=%s\n  camera_uid=%s",
+		hex.EncodeToString(session.SessionID[:]),
+		session.CameraCertificate.Subject.CommonName,
+		cameraUID,
+	)
+
+	log.Printf("handshake ok:\n")
 
 	sink, err := media.NewFFplaySink(sessionCtx, c.options.FFplayPath)
 	if err != nil {

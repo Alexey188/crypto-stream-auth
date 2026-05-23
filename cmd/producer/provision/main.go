@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	cameraPublicKeyPem = "artifacts/keys/camera_public.pem"
+	cameraPublicKeyPem = "artifacts/camera/camera_public2.pem"
 )
 
 var (
@@ -16,16 +16,23 @@ var (
 )
 
 func main() {
-	signer, err := tpm.OpenSigner(tpm.DefaultCameraKeyHandle, nil)
+	handle := tpm.DefaultCameraKeyHandle
+
+	signer, err := tpm.OpenSigner(handle, nil)
 	if err != nil {
 		if !tpm.IsPersistentHandleNotFound(err) {
-			log.Fatalf("open existing tpm camera key: %v", err)
+			log.Fatalf("open existing tpm camera key 0x%x: %v", handle, err)
 		}
 
-		signer, err = tpm.ProvisionSigner(tpm.DefaultCameraKeyHandle, nil, nil)
+		log.Printf("tpm camera key not found: handle=0x%x", handle)
+
+		signer, err = tpm.ProvisionSigner(handle, nil, nil)
 		if err != nil {
-			log.Fatalf("provision tpm camera key: %v", err)
+			log.Fatalf("provision tpm camera key 0x%x: %v", handle, err)
 		}
+		log.Printf("created new tpm camera key: handle=0x%x", handle)
+	} else {
+		log.Printf("opened existing tpm camera key: handle=0x%x", handle)
 	}
 	defer signer.Close()
 
@@ -38,5 +45,5 @@ func main() {
 		log.Fatalf("%v: save camera public key: %v", ErrGeneratePublicKey, err)
 	}
 
-	log.Printf("camera public key exported successfully: %s", cameraPublicKeyPem)
+	log.Printf("camera public key exported successfully: handle=0x%x path=%s", handle, cameraPublicKeyPem)
 }

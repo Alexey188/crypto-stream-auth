@@ -16,6 +16,43 @@ const (
 func IsPersistentHandleNotFound(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "TPM_RC_HANDLE")
 }
+
+func EvictSigner(persistentHandle uint32, ownerAuth []byte) error {
+	if err := ValidatePersistentHandle(persistentHandle); err != nil {
+		return err
+	}
+
+	tpmDevice, err := windowstpm.Open()
+	if err != nil {
+		return fmt.Errorf("%w: open tpm: %w", ErrTPMSigner, err)
+	}
+	defer tpmDevice.Close()
+
+	handle := tpm2.TPMHandle(persistentHandle)
+	readPublic, err := tpm2.ReadPublic{
+		ObjectHandle: handle,
+	}.Execute(tpmDevice)
+	if err != nil {
+		return fmt.Errorf("%w: read persistent key: %w", ErrTPMSigner, err)
+	}
+
+	objectHandle := tpm2.NamedHandle{
+		Handle: handle,
+		Name:   readPublic.Name,
+	}
+
+	evict := tpm2.EvictControl{
+		Auth:             ownerHandle(ownerAuth),
+		ObjectHandle:     &objectHandle,
+		PersistentHandle: handle,
+	}
+	if _, err := evict.Execute(tpmDevice); err != nil {
+		return fmt.Errorf("%w: evict persistent key: %w", ErrTPMSigner, err)
+	}
+
+	return nil
+}
+
 func ProvisionSigner(persistentHandle uint32, ownerAuth []byte, keyAuth []byte) (*Signer, error) {
 	if err := ValidatePersistentHandle(persistentHandle); err != nil {
 		return nil, err

@@ -18,5 +18,14 @@ go.work.sum
 artifacts/certs/*
 !artifacts/certs/.gitkeep
 
+artifacts/camera/*
+!artifacts/camera/.gitkeep
+
 artifacts/keys/*
 !artifacts/keys/.gitkeep
+
+artifacts/trust/*
+!artifacts/trust/.gitkeep
+!artifacts/trust/roots/
+artifacts/trust/roots/*
+!artifacts/trust/roots/.gitkeep

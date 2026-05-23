@@ -18,7 +18,7 @@ var ErrTransport = errors.New("transport")
 
 const (
 	ALPN             = "crypto-stream-auth/1"
-	MediaStreamCount = 1 // пока не трогать надо будет делать sequence буффер
+	MediaStreamCount = 1
 
 	lengthFieldSize    = 2
 	timestampFieldSize = 8
@@ -61,11 +61,11 @@ func Dial(ctx context.Context, addr string, tlsConfig *tls.Config, quicConfig *q
 	return conn, nil
 }
 
-func NewQUICConfig(handshakeTimeout time.Duration, idleTimeout time.Duration, maxIncomingStreams int64) *quic.Config {
+func NewQUICConfig(handshakeTimeout time.Duration, idleTimeout time.Duration) *quic.Config {
 	return &quic.Config{
 		HandshakeIdleTimeout: handshakeTimeout,
 		MaxIdleTimeout:       idleTimeout,
-		MaxIncomingStreams:   maxIncomingStreams,
+		MaxIncomingStreams:   2,
 	}
 }
 
@@ -125,6 +125,14 @@ func AcceptStream(ctx context.Context, conn *quic.Conn) (*quic.Stream, error) {
 	}
 
 	return stream, nil
+}
+
+func CloseStreams(streams []*quic.Stream) {
+	for _, stream := range streams {
+		if stream != nil {
+			_ = stream.Close()
+		}
+	}
 }
 
 func WriteHandshakeRequest(stream *quic.Stream, request *handshake.Request) error {
